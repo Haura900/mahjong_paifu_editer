@@ -1,0 +1,11 @@
+{
+  "name": "牌譜工房 — Mahjong Paifu Editor",
+  "short_name": "牌譜工房",
+  "description": "天鳳JSON牌譜を端末内だけで再生・編集・自動補正",
+  "lang": "ja",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f0eee8",
+  "theme_color": "#164f43"
+}
