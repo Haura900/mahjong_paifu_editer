@@ -1,4 +1,4 @@
-import { Lock, RotateCcw, Unlock } from 'lucide-react'
+import { LoaderCircle, Lock, RotateCcw, Unlock } from 'lucide-react'
 import { refKey } from '../domain/codec'
 import { roundLabel } from '../domain/replay'
 import type { AutoChange, Meld, RoundState, Seat } from '../domain/types'
@@ -16,6 +16,9 @@ interface TableViewProps {
   selectedSeat: Seat
   lockedRefs: Set<string>
   changes: AutoChange[]
+  processingTileIds: Set<string>
+  processingCount: number
+  justApplied: boolean
   onSelect: (selection: Selection) => void
   onSelectSeat: (seat: Seat) => void
   onToggleLock: (key: string) => void
@@ -31,6 +34,9 @@ export function TableView({
   selectedSeat,
   lockedRefs,
   changes,
+  processingTileIds,
+  processingCount,
+  justApplied,
   onSelect,
   onSelectSeat,
   onToggleLock,
@@ -38,7 +44,13 @@ export function TableView({
 }: TableViewProps) {
   return (
     <section className="table-shell" aria-label="麻雀卓">
-      <div className="table-felt">
+      <div className={`table-felt ${processingCount ? 'has-processing' : ''} ${justApplied ? 'just-applied' : ''}`}>
+        {processingCount > 0 && (
+          <div className="table-processing-indicator" role="status">
+            <LoaderCircle className="spin" size={13} />
+            補正計算中 · {processingCount}件
+          </div>
+        )}
         {([0, 1, 2, 3] as Seat[]).map((seat) => {
           const relative = (seat - viewpoint + 4) % 4
           const position = POSITIONS[relative]!
@@ -52,6 +64,8 @@ export function TableView({
               selection={selection}
               lockedRefs={lockedRefs}
               changes={changes}
+              processingTileIds={processingTileIds}
+              justApplied={justApplied}
               onSelect={onSelect}
               onSelectSeat={onSelectSeat}
               onToggleLock={onToggleLock}
@@ -78,6 +92,8 @@ export function TableView({
                 selected={selection?.type === 'tile' && selection.tileId === id}
                 locked={lockedRefs.has(refKey(state.tiles[id]!.acquisitionRef))}
                 changes={changes}
+                processing={processingTileIds.has(id)}
+                flash={justApplied}
                 onClick={() => onSelect({ type: 'tile', tileId: id })}
               />
             ))}
@@ -99,6 +115,8 @@ interface PlayerEdgeProps {
   selection: Selection
   lockedRefs: Set<string>
   changes: AutoChange[]
+  processingTileIds: Set<string>
+  justApplied: boolean
   onSelect: (selection: Selection) => void
   onSelectSeat: (seat: Seat) => void
   onToggleLock: (key: string) => void
@@ -112,6 +130,8 @@ function PlayerEdge({
   selection,
   lockedRefs,
   changes,
+  processingTileIds,
+  justApplied,
   onSelect,
   onSelectSeat,
   onToggleLock,
@@ -137,6 +157,8 @@ function PlayerEdge({
                 selected={selection?.type === 'tile' && selection.tileId === id}
                 locked={locked}
                 changes={changes}
+                processing={processingTileIds.has(id)}
+                flash={justApplied}
                 onClick={() => onSelect({ type: 'tile', tileId: id })}
               />
               {selection?.type === 'tile' && selection.tileId === id && (
@@ -175,6 +197,8 @@ function PlayerEdge({
             selected={selection?.type === 'tile' && selection.tileId === river.tileId}
             locked={lockedRefs.has(refKey(state.tiles[river.tileId]!.acquisitionRef))}
             changes={changes}
+            processing={processingTileIds.has(river.tileId)}
+            flash={justApplied}
             onClick={() => onSelect({ type: 'tile', tileId: river.tileId })}
           />
         ))}

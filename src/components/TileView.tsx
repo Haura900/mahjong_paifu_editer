@@ -8,6 +8,8 @@ interface TileViewProps {
   selected?: boolean
   locked?: boolean
   disabled?: boolean
+  processing?: boolean
+  flash?: boolean
   called?: boolean
   reach?: boolean
   changes?: AutoChange[]
@@ -32,6 +34,8 @@ export function TileView({
   selected,
   locked,
   disabled,
+  processing,
+  flash,
   called,
   reach,
   changes = [],
@@ -41,12 +45,13 @@ export function TileView({
   const key = refKey(tile.acquisitionRef)
   const change = [...changes].reverse().find((item) => refKey(item.ref) === key)
   const changeClass = change?.kind === 'manual' ? 'is-manual' : change ? 'is-automatic' : ''
-  const className = `mahjong-tile suit-${tileSuit(tile.code)} ${tile.red ? 'is-red' : ''} ${selected ? 'is-selected' : ''} ${called ? 'is-called' : ''} ${reach ? 'is-reach' : ''} ${changeClass} ${compact ? 'is-compact' : ''}`
+  const className = `mahjong-tile suit-${tileSuit(tile.code)} ${tile.red ? 'is-red' : ''} ${selected ? 'is-selected' : ''} ${called ? 'is-called' : ''} ${reach ? 'is-reach' : ''} ${changeClass} ${compact ? 'is-compact' : ''} ${processing ? 'is-processing' : ''} ${flash && change ? 'is-flashing' : ''}`
   const title = [
     tileLabel(tile.code),
     `物理牌: ${tile.id}`,
     `由来: ${tile.origin === 'deal' ? '配牌' : tile.origin === 'draw' ? 'ツモ' : 'ドラ表示'}`,
     change ? `変更理由: ${change.reason}` : '',
+    processing ? '自動補正を計算中' : '',
     locked ? '固定済み' : '',
   ].filter(Boolean).join('\n')
   const face = (
@@ -54,6 +59,7 @@ export function TileView({
       <TileArtwork code={tile.code} />
       {locked && <LockKeyhole className="tile-lock" aria-hidden="true" />}
       {change && <span className="change-dot" aria-hidden="true" />}
+      {processing && <span className="tile-working" aria-hidden="true" />}
     </>
   )
 

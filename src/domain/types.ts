@@ -204,6 +204,18 @@ export interface SolverResult {
   conflict?: string
 }
 
+export interface EditQueueEntry {
+  id: string
+  request: EditRequest
+  label: string
+  status: 'queued' | 'processing' | 'applied' | 'failed'
+  progress: number
+  message: string
+  queuedAt: string
+  completedAt?: string
+  result?: SolverResult
+}
+
 export interface EditorProject {
   format: 'mahjong-paifu-editor-project'
   version: 1

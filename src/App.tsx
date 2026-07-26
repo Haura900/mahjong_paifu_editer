@@ -6,6 +6,8 @@ import {
   FileJson,
   FolderOpen,
   Info,
+  ListTree,
+  LoaderCircle,
   Redo2,
   RotateCcw,
   Save,
@@ -18,8 +20,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import sampleUrl from '../sample.txt?url'
 import { CodecError, encodeTenhouLog, parseTenhouLog } from './domain/codec'
 import {
-  applyProjectEdit,
+  applySolvedProjectEdit,
   createProject,
+  editRequestLabel,
   parseProject,
   redoProject,
   resetProject,
@@ -31,23 +34,18 @@ import { decodeMatch, snapshotAt } from './domain/replay'
 import { solveEdit } from './domain/solver'
 import type {
   EditorProject,
+  EditQueueEntry,
   EditRequest,
   Seat,
   SolverResult,
   TenhouLog,
 } from './domain/types'
+import { ChangeLogDrawer } from './components/ChangeLogDrawer'
 import { Inspector } from './components/Inspector'
-import { PreviewDialog } from './components/PreviewDialog'
+import { JsonExportDialog } from './components/JsonExportDialog'
 import { TableView, type Selection } from './components/TableView'
 import { Timeline } from './components/Timeline'
 import { readFileText, saveText } from './lib/files'
-
-interface PreviewState {
-  request: EditRequest
-  result?: SolverResult
-  progress: number
-  message: string
-}
 
 export function App() {
   const [project, setProject] = useState<EditorProject>()
@@ -58,7 +56,11 @@ export function App() {
   const [selection, setSelection] = useState<Selection>()
   const [playing, setPlaying] = useState(false)
   const [autoRotate, setAutoRotate] = useState(true)
-  const [preview, setPreview] = useState<PreviewState>()
+  const [editQueue, setEditQueue] = useState<EditQueueEntry[]>([])
+  const [activeJobId, setActiveJobId] = useState<string>()
+  const [changeLogOpen, setChangeLogOpen] = useState(false)
+  const [jsonExportOpen, setJsonExportOpen] = useState(false)
+  const [justApplied, setJustApplied] = useState(false)
   const [pasteOpen, setPasteOpen] = useState(false)
   const [pasteValue, setPasteValue] = useState('')
   const [dragging, setDragging] = useState(false)
@@ -67,11 +69,28 @@ export function App() {
   const inputRef = useRef<HTMLInputElement>(null)
   const projectInputRef = useRef<HTMLInputElement>(null)
   const workerRef = useRef<Worker | undefined>(undefined)
+  const projectRef = useRef<EditorProject | undefined>(undefined)
+  const applyFlashTimerRef = useRef<number | undefined>(undefined)
   const sampleLoaded = useRef(false)
+
+  projectRef.current = project
+
+  const setCurrentProject = useCallback((next: EditorProject | undefined) => {
+    projectRef.current = next
+    setProject(next)
+  }, [])
+
+  const clearEditPipeline = useCallback(() => {
+    workerRef.current?.terminate()
+    workerRef.current = undefined
+    setActiveJobId(undefined)
+    setEditQueue([])
+  }, [])
 
   const loadLog = useCallback((log: TenhouLog, label: string) => {
     const decoded = decodeMatch(log)
-    setProject(createProject(decoded.raw))
+    clearEditPipeline()
+    setCurrentProject(createProject(decoded.raw))
     setRound(0)
     setEvent(0)
     setViewpoint(decoded.rounds[0]?.snapshots[0]?.dealer ?? 0)
@@ -79,14 +98,15 @@ export function App() {
     setSelection(undefined)
     setError(undefined)
     setNotice(`${label}を読み込みました（${decoded.rounds.length}局）`)
-  }, [])
+  }, [clearEditPipeline, setCurrentProject])
 
   const loadText = useCallback((text: string, label: string, projectFile = false) => {
     try {
       if (projectFile || (text.includes('"format"') && text.includes('mahjong-paifu-editor-project'))) {
         const loaded = parseProject(text)
         decodeMatch(loaded.current)
-        setProject(loaded)
+        clearEditPipeline()
+        setCurrentProject(loaded)
         setRound(0)
         setEvent(0)
         setSelection(undefined)
@@ -102,7 +122,7 @@ export function App() {
         setError(caught instanceof Error ? caught.message : String(caught))
       }
     }
-  }, [loadLog])
+  }, [clearEditPipeline, loadLog, setCurrentProject])
 
   useEffect(() => {
     if (sampleLoaded.current) return
@@ -121,6 +141,15 @@ export function App() {
   const state = decodedRound ? snapshotAt(decodedRound, event) : undefined
   const lockedRefs = useMemo(() => new Set(project?.lockedRefs ?? []), [project?.lockedRefs])
   const recentChanges = project?.transactions.at(-1)?.changes ?? []
+  const processingEntries = useMemo(
+    () => editQueue.filter((entry) => entry.status === 'queued' || entry.status === 'processing'),
+    [editQueue],
+  )
+  const processingTileIds = useMemo(
+    () => new Set(processingEntries.flatMap((entry) => entry.request.type === 'tile' ? [entry.request.tileId] : [])),
+    [processingEntries],
+  )
+  const exportedJson = useMemo(() => project ? encodeTenhouLog(project.current) : '', [project])
 
   useEffect(() => {
     if (!playing || !decodedRound) return
@@ -153,20 +182,93 @@ export function App() {
     return () => window.clearTimeout(timer)
   }, [notice])
 
-  const beginPreview = useCallback((request: EditRequest) => {
-    if (!project) return
-    workerRef.current?.terminate()
-    setPreview({ request, progress: 8, message: '編集箇所と固定値を確認中' })
+  const enqueueEdit = useCallback((request: EditRequest) => {
+    if (!projectRef.current) return
+    const entry: EditQueueEntry = {
+      id: crypto.randomUUID(),
+      request,
+      label: editRequestLabel(request),
+      status: 'queued',
+      progress: 4,
+      message: '処理待ち',
+      queuedAt: new Date().toISOString(),
+    }
+    setEditQueue((current) => [...current, entry])
+    setNotice(`${entry.label}をバックグラウンド処理へ追加しました`)
+  }, [])
+
+  useEffect(() => {
+    if (!project || activeJobId) return
+    const job = editQueue.find((entry) => entry.status === 'queued')
+    if (!job) return
+
+    const baseProject = projectRef.current
+    if (!baseProject) return
+    const baseLog = baseProject.current
+    const baseLocks = baseProject.lockedRefs.join('\u0000')
+    setActiveJobId(job.id)
+    setEditQueue((current) => current.map((entry) => entry.id === job.id
+      ? { ...entry, status: 'processing', progress: 10, message: '物理牌と手順を追跡中' }
+      : entry))
+
+    const finish = (result: SolverResult) => {
+      workerRef.current?.terminate()
+      workerRef.current = undefined
+      const latest = projectRef.current
+      if (!latest) {
+        setActiveJobId(undefined)
+        return
+      }
+      if (latest.current !== baseLog || latest.lockedRefs.join('\u0000') !== baseLocks) {
+        setEditQueue((current) => current.map((entry) => entry.id === job.id
+          ? { ...entry, status: 'queued', progress: 4, message: '状態が変わったため再計算待ち' }
+          : entry))
+        setActiveJobId(undefined)
+        return
+      }
+      const applied = applySolvedProjectEdit(latest, job.request, result)
+      if (applied.result.ok) {
+        setCurrentProject(applied.project)
+        setEditQueue((current) => current.map((entry) => entry.id === job.id
+          ? {
+              ...entry,
+              status: 'applied',
+              progress: 100,
+              message: '適用しました',
+              completedAt: new Date().toISOString(),
+              result: applied.result,
+            }
+          : entry))
+        setJustApplied(true)
+        if (applyFlashTimerRef.current) window.clearTimeout(applyFlashTimerRef.current)
+        applyFlashTimerRef.current = window.setTimeout(() => setJustApplied(false), 720)
+        setNotice(`${applied.result.changes.length}件の連鎖変更を適用しました`)
+      } else {
+        setEditQueue((current) => current.map((entry) => entry.id === job.id
+          ? {
+              ...entry,
+              status: 'failed',
+              progress: 100,
+              message: '適用できませんでした',
+              completedAt: new Date().toISOString(),
+              result: applied.result,
+            }
+          : entry))
+        setNotice('適用できない変更があります。変更ログで理由を確認できます')
+      }
+      setActiveJobId(undefined)
+    }
+
     if (typeof Worker === 'undefined') {
-      window.setTimeout(() => {
-        const result = solveEdit(project.current, request, { lockedRefs: project.lockedRefs, seed: project.seed })
-        setPreview({ request, result, progress: 100, message: '探索完了' })
-      }, 10)
+      window.setTimeout(() => finish(solveEdit(baseLog, job.request, {
+        lockedRefs: baseProject.lockedRefs,
+        seed: baseProject.seed,
+      })), 10)
       return
     }
+
     const worker = new Worker(new URL('./domain/solver.worker.ts', import.meta.url), { type: 'module' })
     workerRef.current = worker
-    const id = crypto.randomUUID()
     worker.onmessage = (message: MessageEvent<{
       id: string
       type: 'progress' | 'result'
@@ -174,45 +276,38 @@ export function App() {
       message?: string
       result?: SolverResult
     }>) => {
-      if (message.data.id !== id) return
+      if (message.data.id !== job.id) return
       if (message.data.type === 'progress') {
-        setPreview((current) => current ? {
-          ...current,
-          progress: message.data.progress ?? current.progress,
-          message: message.data.message ?? current.message,
-        } : current)
-      } else {
-        worker.terminate()
-        workerRef.current = undefined
-        setPreview({ request, result: message.data.result, progress: 100, message: '探索完了' })
+        setEditQueue((current) => current.map((entry) => entry.id === job.id
+          ? {
+              ...entry,
+              progress: message.data.progress ?? entry.progress,
+              message: message.data.message ?? entry.message,
+            }
+          : entry))
+      } else if (message.data.result) {
+        finish(message.data.result)
       }
     }
     worker.onerror = () => {
-      worker.terminate()
-      workerRef.current = undefined
-      const result = solveEdit(project.current, request, { lockedRefs: project.lockedRefs, seed: project.seed })
-      setPreview({ request, result, progress: 100, message: '探索完了' })
+      finish(solveEdit(baseLog, job.request, {
+        lockedRefs: baseProject.lockedRefs,
+        seed: baseProject.seed,
+      }))
     }
     worker.postMessage({
-      id,
-      log: project.current,
-      request,
-      lockedRefs: project.lockedRefs,
-      seed: project.seed,
+      id: job.id,
+      log: baseLog,
+      request: job.request,
+      lockedRefs: baseProject.lockedRefs,
+      seed: baseProject.seed,
     })
-  }, [project])
+  }, [activeJobId, editQueue, project, setCurrentProject])
 
-  const applyPreview = () => {
-    if (!project || !preview?.result?.ok) return
-    const applied = applyProjectEdit(project, preview.request)
-    if (!applied.result.ok) {
-      setPreview({ ...preview, result: applied.result })
-      return
-    }
-    setProject(applied.project)
-    setPreview(undefined)
-    setNotice(`${applied.result.changes.length}件の変更を1トランザクションで適用しました`)
-  }
+  useEffect(() => () => {
+    workerRef.current?.terminate()
+    if (applyFlashTimerRef.current) window.clearTimeout(applyFlashTimerRef.current)
+  }, [])
 
   const openFile = async (file: File, isProject = false) => {
     const text = await readFileText(file)
@@ -228,10 +323,10 @@ export function App() {
     if (autoRotate && dealer !== undefined) setViewpoint(dealer)
   }
 
-  const exportJson = async () => {
+  const exportJsonFile = async () => {
     if (!project) return
     try {
-      const method = await saveText('edited-paifu.json', encodeTenhouLog(project.current), '天鳳JSON牌譜')
+      const method = await saveText('edited-paifu.json', exportedJson, '天鳳JSON牌譜')
       setNotice(method === 'direct' ? '編集済みJSONを保存しました' : '編集済みJSONをダウンロードしました')
     } catch {
       // User cancelled the platform picker.
@@ -297,7 +392,8 @@ export function App() {
           <div className="action-menu">
             <button type="button"><Save size={16} /> 保存 <ChevronDown size={13} /></button>
             <div className="action-menu-popover">
-              <button type="button" onClick={() => void exportJson()}><Download size={15} /> 互換JSONを出力</button>
+              <button type="button" onClick={() => setJsonExportOpen(true)}><Braces size={15} /> 互換JSONをコピー</button>
+              <button type="button" onClick={() => void exportJsonFile()}><Download size={15} /> JSONファイルを保存</button>
               <button type="button" onClick={() => void exportProject()}><FileJson size={15} /> 編集プロジェクトを保存</button>
               <button type="button" onClick={() => projectInputRef.current?.click()}><FileInput size={15} /> 編集プロジェクトを開く</button>
             </div>
@@ -306,9 +402,19 @@ export function App() {
         <div className="history-actions">
           <button
             type="button"
+            className={`change-log-trigger ${processingEntries.length ? 'is-busy' : ''}`}
+            title="変更ログ"
+            onClick={() => setChangeLogOpen(true)}
+          >
+            {processingEntries.length ? <LoaderCircle className="spin" size={17} /> : <ListTree size={17} />}
+            変更ログ
+            {editQueue.length > 0 && <span>{processingEntries.length || editQueue.length}</span>}
+          </button>
+          <button
+            type="button"
             title="Undo"
             disabled={project.transactions.length === 0}
-            onClick={() => { setProject(undoProject(project)); setNotice('連鎖変更を元に戻しました') }}
+            onClick={() => { setCurrentProject(undoProject(project)); setNotice('連鎖変更を元に戻しました') }}
           >
             <Undo2 size={17} /> 元に戻す
           </button>
@@ -316,11 +422,11 @@ export function App() {
             type="button"
             title="Redo"
             disabled={project.redo.length === 0}
-            onClick={() => { setProject(redoProject(project)); setNotice('連鎖変更をやり直しました') }}
+            onClick={() => { setCurrentProject(redoProject(project)); setNotice('連鎖変更をやり直しました') }}
           >
             <Redo2 size={17} /> やり直す
           </button>
-          <button type="button" title="すべて元に戻す" onClick={() => { setProject(resetProject(project)); setNotice('元の牌譜へ戻しました') }}>
+          <button type="button" title="すべて元に戻す" onClick={() => { setCurrentProject(resetProject(project)); setNotice('元の牌譜へ戻しました') }}>
             <RotateCcw size={17} />
           </button>
         </div>
@@ -360,9 +466,12 @@ export function App() {
             selectedSeat={selectedSeat}
             lockedRefs={lockedRefs}
             changes={recentChanges}
+            processingTileIds={processingTileIds}
+            processingCount={processingEntries.length}
+            justApplied={justApplied}
             onSelect={setSelection}
             onSelectSeat={(seat) => { setSelectedSeat(seat); setSelection(undefined) }}
-            onToggleLock={(key) => setProject(toggleLock(project, key))}
+            onToggleLock={(key) => setCurrentProject(toggleLock(project, key))}
             onRotate={() => setViewpoint(((viewpoint + 1) % 4) as Seat)}
           />
         </section>
@@ -375,20 +484,17 @@ export function App() {
           lockedRefs={lockedRefs}
           recentChanges={recentChanges}
           diagnostics={currentDiagnostics}
-          onPreview={beginPreview}
-          onToggleLock={(key) => setProject(toggleLock(project, key))}
+          onPreview={enqueueEdit}
+          onToggleLock={(key) => setCurrentProject(toggleLock(project, key))}
         />
       </main>
 
-      {preview && (
-        <PreviewDialog
-          request={preview.request}
-          result={preview.result}
-          progress={preview.progress}
-          progressMessage={preview.message}
-          onApply={applyPreview}
-          onClose={() => setPreview(undefined)}
-          onCancel={() => { workerRef.current?.terminate(); workerRef.current = undefined; setPreview(undefined) }}
+      {changeLogOpen && <ChangeLogDrawer entries={editQueue} onClose={() => setChangeLogOpen(false)} />}
+      {jsonExportOpen && (
+        <JsonExportDialog
+          text={exportedJson}
+          onClose={() => setJsonExportOpen(false)}
+          onSave={() => void exportJsonFile()}
         />
       )}
 

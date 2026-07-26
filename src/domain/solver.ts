@@ -210,7 +210,9 @@ function chooseChiCodes(called: TileCode, handCodes: TileCode[]): { codes: TileC
     })
     options.push({ codes: sequence, calledIndex, missing })
   }
-  return options.sort((a, b) => a.missing - b.missing || a.calledIndex - b.calledIndex)[0]
+  return options
+    .filter((option) => option.missing === 0)
+    .sort((a, b) => a.calledIndex - b.calledIndex)[0]
 }
 
 function meldCalledIndex(type: MeldType, actor: Seat, target: Seat): number {
@@ -222,10 +224,16 @@ function meldCalledIndex(type: MeldType, actor: Seat, target: Seat): number {
 
 function findCallTarget(state: RoundState, actor: Seat, type: MeldType): { seat: Seat; tileId: string; code: TileCode } | undefined {
   const allowed = type === 'chi' ? [((actor + 3) % 4) as Seat] : ([1, 2, 3] as const).map((offset) => ((actor + offset) % 4) as Seat)
-  const candidates = allowed.flatMap((seat) =>
-    state.rivers[seat]!
-      .filter((river) => !river.called && river.eventIndex <= state.eventIndex)
-      .map((river) => ({ seat, tileId: river.tileId, code: river.code, event: river.eventIndex })))
+  const lastDiscard = state.lastDiscard
+  if (!lastDiscard || !allowed.includes(lastDiscard.seat)) return undefined
+  const river = state.rivers[lastDiscard.seat]![lastDiscard.riverIndex]
+  if (!river || river.called) return undefined
+  const candidates = [{
+    seat: lastDiscard.seat,
+    tileId: river.tileId,
+    code: river.code,
+    event: river.eventIndex,
+  }]
   const handCodes = state.hands[actor]!.map((id) => state.tiles[id]!.code)
   return candidates
     .filter((candidate) => {
@@ -234,6 +242,62 @@ function findCallTarget(state: RoundState, actor: Seat, type: MeldType): { seat:
       return count >= (type === 'pon' ? 2 : 3)
     })
     .sort((a, b) => b.event - a.event)[0]
+}
+
+function clearReachMarkersForOpenMeld(
+  log: TenhouLog,
+  round: number,
+  actor: Seat,
+  changes: AutoChange[],
+): void {
+  const stream = getRoundSection(log.log[round]!, 'discard', actor)
+  for (let index = 0; index < stream.length; index += 1) {
+    const before = stream[index]
+    if (typeof before !== 'string' || !/^r(?:60|\d{2})$/.test(before)) continue
+    const after = Number(before.slice(1))
+    stream[index] = after
+    changes.push({
+      id: `change-${changes.length + 1}`,
+      kind: 'automatic',
+      ref: { round, section: 'discard', seat: actor, index },
+      before,
+      after,
+      reason: '副露により門前条件を失うため、この局のリーチ宣言と1000点供託を解除',
+    })
+  }
+}
+
+function repairActorFutureDiscards(
+  log: TenhouLog,
+  round: number,
+  actor: Seat,
+  changes: AutoChange[],
+): void {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const replayed = replayRound(log, round)
+    const issue = replayed.diagnostics.find((diagnostic) =>
+      diagnostic.code === 'TILE_NOT_IN_HAND'
+      && diagnostic.seat === actor
+      && diagnostic.ref?.section === 'discard')
+    if (!issue?.ref) return
+    const event = replayed.events.find((candidate) =>
+      candidate.type === 'discard'
+      && candidate.rawRef
+      && refKey(candidate.rawRef) === refKey(issue.ref!))
+    if (event?.tile === undefined) return
+    const before = readRawRef(log, issue.ref)
+    const after = event.tile
+    if (before === after) return
+    writeRawRef(log, issue.ref, after)
+    changes.push({
+      id: `change-${changes.length + 1}`,
+      kind: 'automatic',
+      ref: issue.ref,
+      before,
+      after,
+      reason: `副露で手牌構成が変わったため、後続の不可能な打牌を保持している${tileLabel(after)}へ差し替え`,
+    })
+  }
 }
 
 function applyMeldAdd(
@@ -332,6 +396,7 @@ function applyMeldAdd(
     after: encoded,
     reason: `${state.names[request.actor]}が${state.names[target.seat]}の${tileLabel(target.code)}を${meldLabelJa(request.meldType)}`,
   })
+  clearReachMarkersForOpenMeld(log, request.round, request.actor, changes)
   if (request.meldType === 'chi' || request.meldType === 'pon') {
     const replaced = drawStream[drawIndex + 1]
     if (typeof replaced === 'number') {
@@ -379,6 +444,7 @@ function applyMeldAdd(
       })
     }
   }
+  repairActorFutureDiscards(log, request.round, request.actor, changes)
   return undefined
 }
 

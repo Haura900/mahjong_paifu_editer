@@ -135,6 +135,22 @@ describe('deterministic automatic correction solver', () => {
     expectPlayable(successful!.output!)
   }, 20_000)
 
+  it('adds the requested 6索・8索 chi and removes the actor future reach declaration', () => {
+    const result = solveEdit(sample, {
+      type: 'meld-add',
+      round: 4,
+      event: 16,
+      actor: 1,
+      meldType: 'chi',
+    })
+    expect(result.ok, result.conflict).toBe(true)
+    expect(result.changes.some((change) => change.kind === 'manual' && change.reason.includes('チー'))).toBe(true)
+    expect(result.changes.some((change) => change.kind === 'automatic' && change.reason.includes('リーチ宣言'))).toBe(true)
+    expect(getRoundSection(result.output!.log[4]!, 'discard', 1).some((item) =>
+      typeof item === 'string' && /^r/.test(item))).toBe(false)
+    expectPlayable(result.output!)
+  }, 20_000)
+
   it('repairs a river edit at the acquisition source instead of leaving an impossible discard', () => {
     const decoded = decodeMatch(sample)
     const sourceRound = decoded.rounds[1]!

@@ -177,23 +177,6 @@ export function Inspector({
         </div>
       </section>
 
-      {recentChanges.length > 0 && (
-        <section className="inspector-section reason-log">
-          <div className="section-title">
-            <div>
-              <h3>直近の変更理由</h3>
-              <p>{recentChanges.length}件の連鎖変更</p>
-            </div>
-            <GitBranch size={17} />
-          </div>
-          {recentChanges.map((change) => (
-            <article key={change.id} className={change.kind}>
-              <span>{change.kind === 'manual' ? '手動' : change.kind === 'automatic' ? '自動補正' : '伝播'}</span>
-              <p>{change.reason}</p>
-            </article>
-          ))}
-        </section>
-      )}
     </aside>
   )
 }

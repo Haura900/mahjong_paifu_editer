@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { App } from '../App'
 
@@ -22,10 +22,11 @@ describe('browser-facing editor workflow', () => {
   })
 
   afterEach(() => {
+    cleanup()
     vi.unstubAllGlobals()
   })
 
-  it('loads sample, navigates, selects a physical tile and previews an edit', async () => {
+  it('keeps the table interactive while edits are queued in a worker', async () => {
     const { container } = render(<App />)
     expect(await screen.findByText(/全 11 局/)).toBeInTheDocument()
     expect(screen.getByRole('region', { name: '麻雀卓' })).toBeInTheDocument()
@@ -42,9 +43,24 @@ describe('browser-facing editor workflow', () => {
     const replacement = screen.getAllByTitle(/へ変更/).find((button) => !(button as HTMLButtonElement).disabled)
     expect(replacement).toBeDefined()
     fireEvent.click(replacement!)
-    expect(await screen.findByText('連鎖する変更を確認')).toBeInTheDocument()
-    expect(screen.getByText('ユーザー指定と固定値を維持したまま、変更コストが最小の合法解を探索しています。')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: '探索をキャンセル' }))
     expect(screen.queryByText('連鎖する変更を確認')).not.toBeInTheDocument()
+    const another = screen.getAllByTitle(/へ変更/)
+      .find((button) => button !== replacement && !(button as HTMLButtonElement).disabled)
+    expect(another).toBeDefined()
+    fireEvent.click(another!)
+    fireEvent.click(screen.getByRole('button', { name: /変更ログ/ }))
+    expect(await screen.findByRole('dialog', { name: '変更ログ' })).toBeInTheDocument()
+    expect(screen.getAllByText('牌を変更')).toHaveLength(2)
+    expect(screen.getByText(/2件 処理中/)).toBeInTheDocument()
   }, 20_000)
+
+  it('opens compatible JSON in a copyable text box while retaining file save', async () => {
+    render(<App />)
+    expect(await screen.findByText(/全 11 局/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /互換JSONをコピー/ }))
+    const textbox = await screen.findByRole('textbox', { name: '編集済み牌譜JSON' })
+    expect(() => JSON.parse((textbox as HTMLTextAreaElement).value)).not.toThrow()
+    expect(screen.getByRole('button', { name: /ファイルにも保存/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /クリップボードへコピー/ })).toBeInTheDocument()
+  })
 })

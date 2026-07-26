@@ -42,12 +42,20 @@ export function applyProjectEdit(
     lockedRefs: project.lockedRefs,
     seed: project.seed,
   })
+  return applySolvedProjectEdit(project, request, result)
+}
+
+export function applySolvedProjectEdit(
+  project: EditorProject,
+  request: EditRequest,
+  result: SolverResult,
+): { project: EditorProject; result: SolverResult } {
   if (!result.ok || !result.output) return { project, result }
   const now = new Date().toISOString()
   const transaction: EditTransaction = {
     id: id(),
     at: now,
-    label: transactionLabel(request),
+    label: editRequestLabel(request),
     request,
     before: structuredClone(project.current),
     after: structuredClone(result.output),
@@ -141,7 +149,7 @@ export function parseProject(input: string): EditorProject {
   return structuredClone(value as EditorProject)
 }
 
-function transactionLabel(request: EditRequest): string {
+export function editRequestLabel(request: EditRequest): string {
   if (request.type === 'tile') return '牌を変更'
   if (request.type === 'meld-add') return '副露を追加'
   if (request.type === 'meld-remove') return '副露を削除'
