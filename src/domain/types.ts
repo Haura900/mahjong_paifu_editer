@@ -188,9 +188,15 @@ export interface EditTransaction {
   seed: number
 }
 
+export interface ForcedMeldPlan {
+  codes: TileCode[]
+  calledIndex?: number
+  target?: Seat
+}
+
 export type EditRequest =
   | { type: 'tile'; round: number; event: number; tileId: string; code: TileCode }
-  | { type: 'meld-add'; round: number; event: number; actor: Seat; meldType: MeldType }
+  | { type: 'meld-add'; round: number; event: number; actor: Seat; meldType: MeldType; forced?: ForcedMeldPlan }
   | { type: 'meld-remove'; round: number; event: number; actor: Seat; meldId: string }
   | { type: 'meld-change'; round: number; event: number; actor: Seat; meldId: string; meldType: MeldType }
   | { type: 'reach'; round: number; event: number; actor: Seat; enabled: boolean }

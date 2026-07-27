@@ -244,11 +244,29 @@ function findCallTarget(state: RoundState, actor: Seat, type: MeldType): { seat:
     .sort((a, b) => b.event - a.event)[0]
 }
 
-function clearReachMarkersForOpenMeld(
+export function canAddMeldNaturally(state: RoundState, actor: Seat, type: MeldType): boolean {
+  if (type === 'ankan') {
+    const counts = new Map<number, number>()
+    state.hands[actor]!.forEach((id) => {
+      const kind = state.tiles[id]!.kind
+      counts.set(kind, (counts.get(kind) ?? 0) + 1)
+    })
+    return [...counts.values()].some((count) => count >= 4)
+  }
+  if (type === 'kakan') {
+    return state.melds[actor]!.some((meld) =>
+      meld.type === 'pon'
+      && state.hands[actor]!.some((id) => sameTileKind(state.tiles[id]!.code, meld.codes[0]!)))
+  }
+  return Boolean(findCallTarget(state, actor, type))
+}
+
+function clearReachMarkers(
   log: TenhouLog,
   round: number,
   actor: Seat,
   changes: AutoChange[],
+  reason = '副露により門前条件を失うため、この局のリーチ宣言と1000点供託を解除',
 ): void {
   const stream = getRoundSection(log.log[round]!, 'discard', actor)
   for (let index = 0; index < stream.length; index += 1) {
@@ -262,9 +280,361 @@ function clearReachMarkersForOpenMeld(
       ref: { round, section: 'discard', seat: actor, index },
       before,
       after,
-      reason: '副露により門前条件を失うため、この局のリーチ宣言と1000点供託を解除',
+      reason,
     })
   }
+}
+
+function forceHandCodes(
+  log: TenhouLog,
+  round: number,
+  event: number,
+  actor: Seat,
+  needed: TileCode[],
+  changes: AutoChange[],
+  locked: Set<string>,
+  reason: string,
+  protectedRefs: Iterable<string> = [],
+): { codes: TileCode[]; refs: string[] } | string {
+  const reserved = new Set<string>()
+  const protectedSet = new Set(protectedRefs)
+  const codes: TileCode[] = []
+  for (const desired of needed) {
+    const replayed = replayRound(log, round)
+    const state = snapshotAt(replayed, event)
+    const hand = state.hands[actor]!
+      .map((id) => state.tiles[id]!)
+      .filter((tile) => !reserved.has(refKey(tile.acquisitionRef)))
+    let tile = hand.find((candidate) => sameTileKind(candidate.code, desired))
+    if (!tile) {
+      tile = hand
+        .filter((candidate) => !locked.has(refKey(candidate.acquisitionRef)))
+        .sort((a, b) =>
+          Number(b.origin === 'draw') - Number(a.origin === 'draw')
+          || b.acquiredAt - a.acquiredAt
+          || refKey(b.acquisitionRef).localeCompare(refKey(a.acquisitionRef)))[0]
+      if (!tile) return `${tileLabel(desired)}へ差し替えられる未固定の手牌がありません`
+      const complete = Object.values(replayed.snapshots.at(-1)!.tiles)
+        .find((candidate) => refKey(candidate.acquisitionRef) === refKey(tile!.acquisitionRef))
+        ?? tile
+      const before = tile.code
+      updatePhysicalTile(
+        log,
+        complete,
+        desired,
+        changes,
+        'automatic',
+        `${reason}。直近に取得した${tileLabel(before)}を${tileLabel(desired)}へ差し替え`,
+      )
+      const swapLocks = new Set([...locked, ...protectedSet, ...reserved])
+      const conflict = repairFifthTiles(log, round, complete, before, desired, changes, swapLocks)
+      if (conflict) return conflict
+      const refreshed = replayRound(log, round)
+      tile = Object.values(snapshotAt(refreshed, event).tiles)
+        .find((candidate) => refKey(candidate.acquisitionRef) === refKey(complete.acquisitionRef))
+      if (!tile || !sameTileKind(tile.code, desired)) return `${tileLabel(desired)}を手牌へ補充できません`
+    }
+    reserved.add(refKey(tile.acquisitionRef))
+    protectedSet.add(refKey(tile.acquisitionRef))
+    codes.push(tile.code)
+  }
+  return { codes, refs: [...reserved] }
+}
+
+function findForcedRiver(
+  replayed: ReturnType<typeof replayRound>,
+  request: Extract<EditRequest, { type: 'meld-add' }>,
+  target?: Seat,
+): { seat: Seat; event: number; tileId: string; ref: RawRef } | undefined {
+  const final = replayed.snapshots.at(-1)!
+  const seats = target === undefined
+    ? ([0, 1, 2, 3] as Seat[]).filter((seat) => seat !== request.actor)
+    : [target]
+  return seats
+    .flatMap((seat) => final.rivers[seat]!
+      .filter((river) => !river.called)
+      .map((river) => ({ seat, event: river.eventIndex, tileId: river.tileId, ref: river.rawRef })))
+    .sort((a, b) => {
+      const aFuture = a.event > request.event
+      const bFuture = b.event > request.event
+      if (aFuture !== bFuture) return Number(aFuture) - Number(bFuture)
+      return aFuture ? a.event - b.event : b.event - a.event
+    })[0]
+}
+
+function addKanDora(
+  log: TenhouLog,
+  round: number,
+  state: RoundState,
+  changes: AutoChange[],
+  reason: string,
+): void {
+  const dora = log.log[round]![2]
+  if (dora.length >= countKans(log.log[round]!) + 1) return
+  const replacement = firstAvailableTile(state, log.rule)
+  dora.push(replacement)
+  changes.push({
+    id: `change-${changes.length + 1}`,
+    kind: 'automatic',
+    ref: { round, section: 'dora', index: dora.length - 1 },
+    before: '',
+    after: replacement,
+    reason,
+  })
+}
+
+function applyForcedOpenMeld(
+  log: TenhouLog,
+  request: Extract<EditRequest, { type: 'meld-add' }>,
+  changes: AutoChange[],
+  locked: Set<string>,
+  createKakan = false,
+): string | undefined {
+  const plan = request.forced!
+  const replayed = replayRound(log, request.round)
+  const target = request.meldType === 'chi'
+    ? ((request.actor + 3) % 4) as Seat
+    : createKakan
+      ? undefined
+      : plan.target
+  const river = findForcedRiver(replayed, request, target)
+  if (!river) return '選択地点の前後に、副露元として変更できる未使用の打牌がありません'
+  const calledIndex = createKakan
+    ? meldCalledIndex('pon', request.actor, river.seat)
+    : request.meldType === 'chi'
+      ? plan.calledIndex ?? 1
+      : meldCalledIndex(request.meldType, request.actor, river.seat)
+  const desiredCodes = createKakan
+    ? Array<TileCode>(3).fill(plan.codes[0]!)
+    : [...plan.codes]
+  const calledCode = desiredCodes[calledIndex]
+  if (!calledCode) return '副露する牌の指定が壊れています'
+  const final = replayed.snapshots.at(-1)!
+  const targetHand = forceHandCodes(
+    log,
+    request.round,
+    Math.max(0, river.event - 1),
+    river.seat,
+    [calledCode],
+    changes,
+    locked,
+    `${createKakan ? 'ポン' : meldLabelJa(request.meldType)}の副露元を作るため${final.names[river.seat]}の手牌を補正`,
+  )
+  if (typeof targetHand === 'string') return targetHand
+  const beforeDiscard = readRawRef(log, river.ref)
+  const afterDiscard: RawTile = typeof beforeDiscard === 'string' && beforeDiscard.startsWith('r')
+    ? `r${calledCode}`
+    : calledCode
+  if (beforeDiscard !== afterDiscard) {
+    writeRawRef(log, river.ref, afterDiscard)
+    changes.push({
+      id: `change-${changes.length + 1}`,
+      kind: 'automatic',
+      ref: river.ref,
+      before: beforeDiscard,
+      after: afterDiscard,
+      reason: `${final.names[river.seat]}の直近の未使用打牌を${tileLabel(calledCode)}へ変更して${createKakan ? 'ポン' : meldLabelJa(request.meldType)}の副露元を作成`,
+    })
+  }
+
+  const needed = desiredCodes.filter((_, index) => index !== calledIndex)
+  if (createKakan) needed.push(plan.codes[0]!)
+  const forcedHand = forceHandCodes(
+    log,
+    request.round,
+    river.event,
+    request.actor,
+    needed,
+    changes,
+    locked,
+    `${createKakan ? '加槓の前提となるポン' : meldLabelJa(request.meldType)}を成立させるため手牌を補正`,
+    targetHand.refs,
+  )
+  if (typeof forcedHand === 'string') return forcedHand
+  const meldHandCodes = forcedHand.codes.slice(0, desiredCodes.length - 1)
+  const encodedCodes: TileCode[] = []
+  let handIndex = 0
+  desiredCodes.forEach((code, index) => {
+    encodedCodes.push(index === calledIndex ? calledCode : meldHandCodes[handIndex++] ?? code)
+  })
+
+  const refreshed = replayRound(log, request.round)
+  const callState = snapshotAt(refreshed, river.event)
+  const drawIndex = callState.streamCursors.draws[request.actor]!
+  const drawStream = getRoundSection(log.log[request.round]!, 'draw', request.actor)
+  const type = createKakan ? 'pon' : request.meldType
+  const encoded = encodeMeld(type, encodedCodes, calledIndex)
+  drawStream.splice(drawIndex, 0, encoded)
+  changes.push({
+    id: `change-${changes.length + 1}`,
+    kind: createKakan ? 'automatic' : 'manual',
+    ref: { round: request.round, section: 'draw', seat: request.actor, index: drawIndex },
+    before: '',
+    after: encoded,
+    reason: `${callState.names[request.actor]}が${callState.names[river.seat]}の${tileLabel(calledCode)}を${meldLabelJa(type)}${createKakan ? 'し、加槓の前提を作成' : ''}`,
+  })
+  clearReachMarkers(log, request.round, request.actor, changes)
+
+  if (type === 'chi' || type === 'pon') {
+    const replaced = drawStream[drawIndex + 1]
+    if (typeof replaced === 'number') {
+      drawStream.splice(drawIndex + 1, 1)
+      changes.push({
+        id: `change-${changes.length + 1}`,
+        kind: 'automatic',
+        ref: { round: request.round, section: 'draw', seat: request.actor, index: drawIndex + 1 },
+        before: replaced,
+        after: '',
+        reason: `${meldLabelJa(type)}により通常ツモが発生しなくなったため、以後のツモを前へ再配置`,
+      })
+    }
+    const discardIndex = callState.streamCursors.discards[request.actor]!
+    const discardStream = getRoundSection(log.log[request.round]!, 'discard', request.actor)
+    const immediate = discardStream[discardIndex]
+    const reservedForMeld = new Set(forcedHand.refs.slice(0, desiredCodes.length - 1))
+    if (createKakan) reservedForMeld.add(forcedHand.refs.at(-1)!)
+    const remainingCodes = callState.hands[request.actor]!
+      .map((id) => callState.tiles[id]!)
+      .filter((tile) => !reservedForMeld.has(refKey(tile.acquisitionRef)))
+      .map((tile) => tile.code)
+      .sort(tileSort)
+    const explicit = typeof immediate === 'string' ? Number(immediate.replace('r', '')) : immediate
+    const reserveKind = createKakan ? normalizeTile(plan.codes[0]!) : undefined
+    const validImmediate = remainingCodes.some((code) =>
+      sameTileKind(code, Number(explicit))
+      && (reserveKind === undefined || normalizeTile(code) !== reserveKind))
+    if (explicit === 60 || !validImmediate) {
+      const replacement = remainingCodes.find((code) => reserveKind === undefined || normalizeTile(code) !== reserveKind)
+        ?? remainingCodes[0]
+      if (!replacement) return '副露直後に打牌できる手牌がありません'
+      discardStream[discardIndex] = replacement
+      changes.push({
+        id: `change-${changes.length + 1}`,
+        kind: 'automatic',
+        ref: { round: request.round, section: 'discard', seat: request.actor, index: discardIndex },
+        before: immediate!,
+        after: replacement,
+        reason: `${meldLabelJa(type)}直後の打牌を、保持している${tileLabel(replacement)}へ変更`,
+      })
+    }
+    if (createKakan) {
+      const reserve = forcedHand.codes.at(-1)!
+      const kakanCodes = [...encodedCodes, reserve]
+      const kakan = encodeMeld('kakan', kakanCodes, calledIndex)
+      discardStream.splice(discardIndex + 1, 0, kakan)
+      changes.push({
+        id: `change-${changes.length + 1}`,
+        kind: 'manual',
+        ref: { round: request.round, section: 'discard', seat: request.actor, index: discardIndex + 1 },
+        before: '',
+        after: kakan,
+        reason: `作成した${tileLabel(reserve)}のポンへ4枚目を加えて加槓`,
+      })
+      addKanDora(log, request.round, callState, changes, '加槓によりカンドラ表示牌を未確定王牌から決定')
+    }
+  }
+  if (type === 'daiminkan') {
+    addKanDora(log, request.round, callState, changes, '大明槓によりカンドラ表示牌を未確定王牌から決定')
+  }
+  repairActorFutureDiscards(log, request.round, request.actor, changes)
+  return undefined
+}
+
+function actorDiscardPoint(
+  replayed: ReturnType<typeof replayRound>,
+  actor: Seat,
+  event: number,
+): { eventBefore: number; index: number } | undefined {
+  const candidates = replayed.events
+    .filter((candidate) => candidate.type === 'discard' && candidate.actor === actor && candidate.rawRef)
+    .map((candidate) => ({ event: candidate.index, index: candidate.rawRef!.index }))
+  const picked = candidates.find((candidate) => candidate.event >= event) ?? candidates.at(-1)
+  return picked ? { eventBefore: Math.max(0, picked.event - 1), index: picked.index } : undefined
+}
+
+function applyForcedAnkan(
+  log: TenhouLog,
+  request: Extract<EditRequest, { type: 'meld-add' }>,
+  changes: AutoChange[],
+  locked: Set<string>,
+): string | undefined {
+  const replayed = replayRound(log, request.round)
+  const point = actorDiscardPoint(replayed, request.actor, request.event)
+  if (!point) return '暗槓を挿入できる打牌地点がありません'
+  const code = request.forced!.codes[0]
+  if (!code) return '暗槓する牌が指定されていません'
+  const forced = forceHandCodes(
+    log,
+    request.round,
+    point.eventBefore,
+    request.actor,
+    Array<TileCode>(4).fill(code),
+    changes,
+    locked,
+    '暗槓を成立させるため手牌を補正',
+  )
+  if (typeof forced === 'string') return forced
+  const encoded = encodeMeld('ankan', forced.codes, 3)
+  const stream = getRoundSection(log.log[request.round]!, 'discard', request.actor)
+  stream.splice(point.index, 0, encoded)
+  changes.push({
+    id: `change-${changes.length + 1}`,
+    kind: 'manual',
+    ref: { round: request.round, section: 'discard', seat: request.actor, index: point.index },
+    before: '',
+    after: encoded,
+    reason: `${tileLabel(code)}4枚の手牌を作り暗槓`,
+  })
+  addKanDora(log, request.round, snapshotAt(replayRound(log, request.round), point.eventBefore), changes, '暗槓によりカンドラ表示牌を未確定王牌から決定')
+  repairActorFutureDiscards(log, request.round, request.actor, changes)
+  return undefined
+}
+
+function applyForcedKakan(
+  log: TenhouLog,
+  request: Extract<EditRequest, { type: 'meld-add' }>,
+  changes: AutoChange[],
+  locked: Set<string>,
+): string | undefined {
+  const code = request.forced!.codes[0]
+  if (!code) return '加槓する牌が指定されていません'
+  let replayed = replayRound(log, request.round)
+  const selected = snapshotAt(replayed, request.event)
+  const existing = selected.melds[request.actor]!.find((meld) =>
+    meld.type === 'pon' && sameTileKind(meld.codes[0]!, code))
+  if (!existing) return applyForcedOpenMeld(log, request, changes, locked, true)
+  const point = actorDiscardPoint(replayed, request.actor, request.event)
+  if (!point) return '加槓を挿入できる打牌地点がありません'
+  const forced = forceHandCodes(
+    log,
+    request.round,
+    point.eventBefore,
+    request.actor,
+    [code],
+    changes,
+    locked,
+    '加槓の4枚目を用意するため手牌を補正',
+  )
+  if (typeof forced === 'string') return forced
+  replayed = replayRound(log, request.round)
+  const beforeState = snapshotAt(replayed, point.eventBefore)
+  const pon = beforeState.melds[request.actor]!.find((meld) =>
+    meld.type === 'pon' && sameTileKind(meld.codes[0]!, code))
+  if (!pon) return '選択したポンが加槓地点より前にありません'
+  const encoded = encodeMeld('kakan', [...pon.codes, forced.codes[0]!], pon.calledIndex ?? 0)
+  const stream = getRoundSection(log.log[request.round]!, 'discard', request.actor)
+  stream.splice(point.index, 0, encoded)
+  changes.push({
+    id: `change-${changes.length + 1}`,
+    kind: 'manual',
+    ref: { round: request.round, section: 'discard', seat: request.actor, index: point.index },
+    before: '',
+    after: encoded,
+    reason: `${tileLabel(code)}のポンへ補正した4枚目を加えて加槓`,
+  })
+  addKanDora(log, request.round, beforeState, changes, '加槓によりカンドラ表示牌を未確定王牌から決定')
+  repairActorFutureDiscards(log, request.round, request.actor, changes)
+  return undefined
 }
 
 function repairActorFutureDiscards(
@@ -300,11 +670,77 @@ function repairActorFutureDiscards(
   }
 }
 
+function repairBrokenFutureMelds(
+  log: TenhouLog,
+  round: number,
+  changes: AutoChange[],
+  requested?: Extract<EditRequest, { type: 'meld-add' }>,
+): void {
+  for (let attempt = 0; attempt < 16; attempt += 1) {
+    const replayed = replayRound(log, round)
+    const issue = replayed.diagnostics.find((diagnostic) =>
+      (diagnostic.code === 'MELD_TILE_MISSING' || diagnostic.code === 'INVALID_KAKAN')
+      && diagnostic.ref
+      && diagnostic.ref.index >= 0)
+    if (!issue?.ref) return
+    const stream = getRoundSection(log.log[round]!, issue.ref.section, issue.ref.seat)
+    const before = stream[issue.ref.index]
+    if (typeof before !== 'string') return
+    const parsed = parseMeldString(before)
+    if (!parsed) return
+    if (
+      requested?.forced
+      && parsed.type === requested.meldType
+      && parsed.codes.length === requested.forced.codes.length
+      && parsed.codes.every((code, index) => sameTileKind(code, requested.forced!.codes[index]!))
+    ) return
+    stream.splice(issue.ref.index, 1)
+    changes.push({
+      id: `change-${changes.length + 1}`,
+      kind: 'automatic',
+      ref: issue.ref,
+      before,
+      after: '',
+      reason: `新しい副露で手順が変わり成立しなくなった将来の${meldLabelJa(parsed.type)}を解除し、通常手番へ復元`,
+    })
+    if (['daiminkan', 'ankan', 'kakan'].includes(parsed.type) && log.log[round]![2].length > 1) {
+      const dora = log.log[round]![2]
+      const removed = dora.pop()!
+      changes.push({
+        id: `change-${changes.length + 1}`,
+        kind: 'automatic',
+        ref: { round, section: 'dora', index: dora.length },
+        before: removed,
+        after: '',
+        reason: '成立しなくなった槓の解除に合わせてカンドラ表示牌を王牌へ戻す',
+      })
+    }
+  }
+}
+
+function forcedMeldExists(
+  log: TenhouLog,
+  request: Extract<EditRequest, { type: 'meld-add' }>,
+): boolean {
+  const final = replayRound(log, request.round).snapshots.at(-1)!
+  const desired = request.forced!.codes
+  return final.melds[request.actor]!.some((meld) =>
+    meld.type === request.meldType
+    && meld.codes.length === desired.length
+    && meld.codes.every((code, index) => sameTileKind(code, desired[index]!)))
+}
+
 function applyMeldAdd(
   log: TenhouLog,
   request: Extract<EditRequest, { type: 'meld-add' }>,
   changes: AutoChange[],
+  locked: Set<string>,
 ): string | undefined {
+  if (request.forced) {
+    if (request.meldType === 'ankan') return applyForcedAnkan(log, request, changes, locked)
+    if (request.meldType === 'kakan') return applyForcedKakan(log, request, changes, locked)
+    return applyForcedOpenMeld(log, request, changes, locked)
+  }
   const replayed = replayRound(log, request.round)
   const state = snapshotAt(replayed, request.event)
   if (request.meldType === 'kakan') {
@@ -396,7 +832,7 @@ function applyMeldAdd(
     after: encoded,
     reason: `${state.names[request.actor]}が${state.names[target.seat]}の${tileLabel(target.code)}を${meldLabelJa(request.meldType)}`,
   })
-  clearReachMarkersForOpenMeld(log, request.round, request.actor, changes)
+  clearReachMarkers(log, request.round, request.actor, changes)
   if (request.meldType === 'chi' || request.meldType === 'pon') {
     const replaced = drawStream[drawIndex + 1]
     if (typeof replaced === 'number') {
@@ -630,6 +1066,26 @@ function convertBrokenWinToDraw(
   const replayed = replayRound(log, round)
   const winEvent = replayed.events.findIndex((event) => event.type === 'ron' || event.type === 'tsumo-win')
   const state = winEvent > 0 ? replayed.snapshots[winEvent - 1]! : replayed.snapshots.at(-1)!
+  for (let player = 0; player < 4; player += 1) {
+    const seat = player as Seat
+    const sections = [
+      ['draw', state.streamCursors.draws[seat]!] as const,
+      ['discard', state.streamCursors.discards[seat]!] as const,
+    ]
+    for (const [section, cursor] of sections) {
+      const stream = getRoundSection(log.log[round]!, section, seat)
+      if (cursor >= stream.length) continue
+      const removed = stream.splice(cursor)
+      changes.push({
+        id: `change-${changes.length + 1}`,
+        kind: 'automatic',
+        ref: { round, section, seat, index: cursor },
+        before: JSON.stringify(removed),
+        after: '',
+        reason: '手順変更で到達不能になった終局後のイベントを牌山へ戻してから流局手順を再構成',
+      })
+    }
+  }
   const pool: TileCode[] = []
   const exactCounts = new Map<number, number>()
   for (const tile of Object.values(state.tiles)) exactCounts.set(tile.code, (exactCounts.get(tile.code) ?? 0) + 1)
@@ -715,7 +1171,7 @@ export function solveEdit(
         }
       }
     } else if (request.type === 'meld-add') {
-      conflict = applyMeldAdd(output, request, changes)
+      conflict = applyMeldAdd(output, request, changes, locked)
     } else if (request.type === 'meld-remove') {
       conflict = applyMeldRemove(output, request, changes)
     } else if (request.type === 'meld-change') {
@@ -726,8 +1182,38 @@ export function solveEdit(
       conflict = applyScore(output, request, changes)
     }
     if (conflict) return { ok: false, changes: [], diagnostics: [], conflict }
+    if (request.type === 'meld-add' && request.forced) {
+      repairBrokenFutureMelds(output, request.round, changes, request)
+      ;([0, 1, 2, 3] as Seat[]).forEach((seat) =>
+        repairActorFutureDiscards(output, request.round, seat, changes))
+      if (!forcedMeldExists(output, request)) {
+        return {
+          ok: false,
+          changes: [],
+          diagnostics: [],
+          conflict: '後続手順を補正しても、指定した副露を維持できません',
+        }
+      }
+    }
 
     let candidate = decodeMatch(output)
+    const invalidatedReachSeats = new Set(candidate.diagnostics
+      .filter((diagnostic) =>
+        diagnostic.round === request.round
+        && (diagnostic.code === 'REACH_NOT_TENPAI' || diagnostic.code === 'OPEN_REACH')
+        && !baselineErrors.has(diagnosticKey(diagnostic))
+        && diagnostic.seat !== undefined)
+      .map((diagnostic) => diagnostic.seat!))
+    for (const seat of invalidatedReachSeats) {
+      clearReachMarkers(
+        output,
+        request.round,
+        seat,
+        changes,
+        '編集によりリーチ成立時の門前・聴牌条件を失ったため、リーチ宣言と1000点供託を解除',
+      )
+    }
+    if (invalidatedReachSeats.size) candidate = decodeMatch(output)
     const introducedInvalidWin = candidate.diagnostics.some((diagnostic) =>
       diagnostic.round === request.round
       && diagnostic.code === 'INVALID_WIN_SHAPE'

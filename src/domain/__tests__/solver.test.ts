@@ -151,6 +151,67 @@ describe('deterministic automatic correction solver', () => {
     expectPlayable(result.output!)
   }, 20_000)
 
+  it('creates a requested 4萬・5萬・6萬 chi by correcting the prior discard and recent hand tiles', () => {
+    const result = solveEdit(sample, {
+      type: 'meld-add',
+      round: 4,
+      event: 16,
+      actor: 1,
+      meldType: 'chi',
+      forced: {
+        codes: [14, 15, 16],
+        calledIndex: 1,
+        target: 0,
+      },
+    })
+    expect(result.ok, result.conflict).toBe(true)
+    expect(result.changes.some((change) => change.kind === 'automatic' && change.reason.includes('副露元'))).toBe(true)
+    expect(result.changes.some((change) => change.kind === 'automatic' && change.reason.includes('手牌を補正'))).toBe(true)
+    const replayed = replayRound(result.output!, 4)
+    expect(replayed.snapshots.at(-1)!.melds[1]!.some((meld) =>
+      meld.type === 'chi'
+      && [14, 15, 16].every((code, index) => sameTileKind(code, meld.codes[index]!)))).toBe(true)
+    expectPlayable(result.output!)
+  }, 20_000)
+
+  it.each([
+    ['ポン', { meldType: 'pon' as const, forced: { codes: [14, 14, 14] as TileCode[], target: 2 as const } }],
+    ['大明槓', { meldType: 'daiminkan' as const, forced: { codes: [24, 24, 24, 24] as TileCode[], target: 3 as const } }],
+    ['暗槓', { meldType: 'ankan' as const, forced: { codes: [34, 34, 34, 34] as TileCode[] } }],
+    ['加槓', { meldType: 'kakan' as const, forced: { codes: [29, 29, 29, 29] as TileCode[] } }],
+  ])('creates a requested %s by correcting the surrounding history', (_label, plan) => {
+    const result = solveEdit(sample, {
+      type: 'meld-add',
+      round: 4,
+      event: 16,
+      actor: 1,
+      ...plan,
+    })
+    expect(result.ok, result.conflict).toBe(true)
+    expect(result.changes.some((change) => change.kind === 'automatic')).toBe(true)
+    expectPlayable(result.output!)
+  }, 40_000)
+
+  it('removes a later reach when changing the initial 3萬 to 6萬 breaks tenpai', () => {
+    const decoded = decodeMatch(sample)
+    const state = decoded.rounds[4]!.snapshots[0]!
+    const tileId = state.hands[1]!.find((id) => state.tiles[id]!.code === 13)!
+    const result = solveEdit(sample, {
+      type: 'tile',
+      round: 4,
+      event: 0,
+      tileId,
+      code: 16,
+    })
+    expect(result.ok, result.conflict).toBe(true)
+    expect(result.changes.some((change) =>
+      change.kind === 'automatic'
+      && change.reason.includes('リーチ成立時の門前・聴牌条件を失った'))).toBe(true)
+    expect(getRoundSection(result.output!.log[4]!, 'discard', 1).some((item) =>
+      typeof item === 'string' && /^r/.test(item))).toBe(false)
+    expectPlayable(result.output!)
+  }, 20_000)
+
   it('repairs a river edit at the acquisition source instead of leaving an impossible discard', () => {
     const decoded = decodeMatch(sample)
     const sourceRound = decoded.rounds[1]!

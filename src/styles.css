@@ -264,6 +264,7 @@ textarea:focus-visible {
 .panel-heading h2,
 .inspector-heading h2,
 .preview-dialog h2,
+.meld-plan-dialog h2,
 .paste-dialog h2 {
   margin: 3px 0 0;
   font-family: 'Yu Mincho', 'Hiragino Mincho ProN', serif;
@@ -435,9 +436,9 @@ textarea:focus-visible {
   top: 50%;
   left: 50%;
   display: grid;
-  width: 172px;
-  height: 150px;
-  padding: 13px;
+  width: clamp(116px, 19%, 172px);
+  height: clamp(100px, 19%, 150px);
+  padding: clamp(7px, 1.4%, 13px);
   transform: translate(-50%, -50%);
   border: 1px solid #9b875e;
   border-radius: 6px;
@@ -448,21 +449,21 @@ textarea:focus-visible {
 
 .center-wind {
   font-family: 'Yu Mincho', 'Hiragino Mincho ProN', serif;
-  font-size: 21px;
+  font-size: clamp(15px, 2.1vw, 21px);
   font-weight: 700;
 }
 
 .center-meta {
   display: flex;
   justify-content: center;
-  gap: 12px;
+  gap: clamp(5px, 1vw, 12px);
   color: #5e5b4d;
-  font-size: 9px;
+  font-size: clamp(7px, .75vw, 9px);
 }
 
 .remaining {
   position: absolute;
-  top: 41px;
+  top: 28%;
   left: 50%;
   display: flex;
   align-items: baseline;
@@ -475,7 +476,7 @@ textarea:focus-visible {
 .remaining-number {
   color: var(--felt-deep);
   font-family: ui-monospace, monospace;
-  font-size: 25px;
+  font-size: clamp(18px, 2.35vw, 25px);
   font-weight: 700;
 }
 
@@ -495,8 +496,8 @@ textarea:focus-visible {
 
 .rotate-table-button {
   position: absolute;
-  right: 7px;
-  bottom: 5px;
+  right: 4px;
+  bottom: 3px;
   display: inline-flex;
   align-items: center;
   gap: 3px;
@@ -504,7 +505,7 @@ textarea:focus-visible {
   border: 0;
   background: transparent;
   color: #696555;
-  font-size: 7px;
+  font-size: clamp(6px, .6vw, 7px);
   cursor: pointer;
 }
 
@@ -610,11 +611,11 @@ textarea:focus-visible {
 
 .hand-row {
   position: absolute;
-  right: 0;
+  left: 0;
   bottom: 34px;
   display: flex;
   align-items: flex-end;
-  justify-content: flex-end;
+  justify-content: flex-start;
   min-width: 100%;
   gap: 1px;
 }
@@ -643,11 +644,12 @@ textarea:focus-visible {
 
 .meld-row {
   position: absolute;
-  bottom: 67px;
-  left: 0;
+  right: 0;
+  bottom: 34px;
   display: flex;
-  max-width: 60%;
+  max-width: 48%;
   align-items: flex-end;
+  justify-content: flex-end;
   gap: 3px;
 }
 
@@ -672,12 +674,7 @@ textarea:focus-visible {
 }
 
 .meld-kind {
-  position: absolute;
-  bottom: -12px;
-  left: 2px;
-  color: #c8d8d2;
-  font-size: 7px;
-  white-space: nowrap;
+  display: none;
 }
 
 .river-grid {
@@ -1485,6 +1482,7 @@ textarea:focus-visible {
 }
 
 .preview-dialog,
+.meld-plan-dialog,
 .json-export-dialog,
 .paste-dialog {
   width: min(620px, 100%);
@@ -1497,6 +1495,7 @@ textarea:focus-visible {
 }
 
 .preview-dialog > header,
+.meld-plan-dialog > header,
 .json-export-dialog > header,
 .paste-dialog > header {
   display: flex;
@@ -1507,6 +1506,7 @@ textarea:focus-visible {
 }
 
 .preview-dialog > header > button,
+.meld-plan-dialog > header > button,
 .json-export-dialog > header > button,
 .paste-dialog > header > button {
   display: grid;
@@ -1614,6 +1614,7 @@ textarea:focus-visible {
 }
 
 .preview-dialog > footer,
+.meld-plan-dialog > footer,
 .json-export-dialog > footer,
 .paste-dialog > footer {
   display: flex;
@@ -1625,6 +1626,7 @@ textarea:focus-visible {
 }
 
 .preview-dialog > footer button,
+.meld-plan-dialog > footer button,
 .json-export-dialog > footer button,
 .paste-dialog > footer button,
 .solver-progress button {
@@ -1636,6 +1638,156 @@ textarea:focus-visible {
   font-size: 10px;
   font-weight: 700;
   cursor: pointer;
+}
+
+.meld-plan-confirm {
+  display: grid;
+  min-height: 220px;
+  padding: 38px;
+  grid-template-columns: 42px 1fr;
+  align-content: center;
+  gap: 16px;
+}
+
+.meld-plan-confirm > svg {
+  width: 36px;
+  height: 36px;
+  color: #b25a42;
+}
+
+.meld-plan-confirm strong {
+  display: block;
+  color: #84392f;
+  font-size: 15px;
+}
+
+.meld-plan-confirm p,
+.meld-plan-note {
+  margin: 8px 0 0;
+  color: #66736e;
+  font-size: 10px;
+  line-height: 1.75;
+}
+
+.meld-plan-config {
+  display: grid;
+  max-height: min(590px, 68vh);
+  padding: 18px 22px 22px;
+  overflow-y: auto;
+  gap: 18px;
+}
+
+.meld-plan-field > strong {
+  display: block;
+  margin-bottom: 8px;
+  color: #35443f;
+  font-size: 10px;
+}
+
+.chi-sequence-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+}
+
+.chi-sequence-grid > button {
+  display: flex;
+  min-width: 0;
+  height: 47px;
+  padding: 3px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #d6dcd8;
+  border-radius: 5px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.chi-sequence-grid .tile-artwork {
+  width: 31%;
+  height: 86%;
+  object-fit: contain;
+}
+
+.called-tile-options,
+.meld-target-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.called-tile-options > button,
+.meld-target-options > button {
+  display: inline-flex;
+  min-height: 42px;
+  padding: 5px 10px;
+  align-items: center;
+  border: 1px solid #d3dad6;
+  border-radius: 6px;
+  background: #fff;
+  color: #34443e;
+  font-size: 9px;
+  cursor: pointer;
+  gap: 7px;
+}
+
+.called-tile-options .tile-artwork {
+  width: 24px;
+  height: 33px;
+  object-fit: contain;
+}
+
+.meld-target-options > button {
+  min-width: 128px;
+}
+
+.meld-target-options span {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border-radius: 4px;
+  background: #e8e3d7;
+  font-family: 'Yu Mincho', 'Hiragino Mincho ProN', serif;
+  font-weight: 700;
+}
+
+.meld-tile-picker {
+  display: grid;
+  grid-template-columns: repeat(9, 1fr);
+  gap: 3px;
+}
+
+.meld-tile-picker > button {
+  display: grid;
+  min-width: 0;
+  height: 40px;
+  padding: 2px;
+  place-items: center;
+  border: 1px solid #d4dad7;
+  border-radius: 4px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.meld-tile-picker .tile-artwork {
+  width: 82%;
+  height: 90%;
+  object-fit: contain;
+}
+
+.chi-sequence-grid > button.is-selected,
+.called-tile-options > button.is-selected,
+.meld-target-options > button.is-selected,
+.meld-tile-picker > button.is-selected {
+  border-color: #c49a48;
+  background: #fff4d8;
+  box-shadow: inset 0 0 0 1px #d8b766;
+}
+
+.meld-tile-picker > button:disabled {
+  opacity: .2;
+  cursor: not-allowed;
 }
 
 .primary-action {

@@ -43,6 +43,7 @@ import type {
 import { ChangeLogDrawer } from './components/ChangeLogDrawer'
 import { Inspector } from './components/Inspector'
 import { JsonExportDialog } from './components/JsonExportDialog'
+import { MeldPlanDialog } from './components/MeldPlanDialog'
 import { TableView, type Selection } from './components/TableView'
 import { Timeline } from './components/Timeline'
 import { readFileText, saveText } from './lib/files'
@@ -60,6 +61,7 @@ export function App() {
   const [activeJobId, setActiveJobId] = useState<string>()
   const [changeLogOpen, setChangeLogOpen] = useState(false)
   const [jsonExportOpen, setJsonExportOpen] = useState(false)
+  const [meldPlanRequest, setMeldPlanRequest] = useState<Extract<EditRequest, { type: 'meld-add' }>>()
   const [justApplied, setJustApplied] = useState(false)
   const [pasteOpen, setPasteOpen] = useState(false)
   const [pasteValue, setPasteValue] = useState('')
@@ -85,6 +87,7 @@ export function App() {
     workerRef.current = undefined
     setActiveJobId(undefined)
     setEditQueue([])
+    setMeldPlanRequest(undefined)
   }, [])
 
   const loadLog = useCallback((log: TenhouLog, label: string) => {
@@ -485,6 +488,7 @@ export function App() {
           recentChanges={recentChanges}
           diagnostics={currentDiagnostics}
           onPreview={enqueueEdit}
+          onNeedMeldPlan={setMeldPlanRequest}
           onToggleLock={(key) => setCurrentProject(toggleLock(project, key))}
         />
       </main>
@@ -495,6 +499,17 @@ export function App() {
           text={exportedJson}
           onClose={() => setJsonExportOpen(false)}
           onSave={() => void exportJsonFile()}
+        />
+      )}
+      {meldPlanRequest && (
+        <MeldPlanDialog
+          state={state}
+          request={meldPlanRequest}
+          onClose={() => setMeldPlanRequest(undefined)}
+          onApply={(request) => {
+            enqueueEdit(request)
+            setMeldPlanRequest(undefined)
+          }}
         />
       )}
 

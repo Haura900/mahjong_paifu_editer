@@ -1,5 +1,6 @@
 import { AlertTriangle, Check, GitBranch, LockKeyhole, Plus, Trash2, WandSparkles } from 'lucide-react'
 import { refKey } from '../domain/codec'
+import { canAddMeldNaturally } from '../domain/solver'
 import { ALL_TILE_CODES, normalizeTile, tileLabel } from '../domain/tile'
 import type {
   AutoChange,
@@ -22,6 +23,7 @@ interface InspectorProps {
   recentChanges: AutoChange[]
   diagnostics: Diagnostic[]
   onPreview: (request: EditRequest) => void
+  onNeedMeldPlan: (request: Extract<EditRequest, { type: 'meld-add' }>) => void
   onToggleLock: (key: string) => void
 }
 
@@ -35,6 +37,7 @@ export function Inspector({
   recentChanges,
   diagnostics,
   onPreview,
+  onNeedMeldPlan,
   onToggleLock,
 }: InspectorProps) {
   const tile = selection?.type === 'tile' ? state.tiles[selection.tileId] : undefined
@@ -153,6 +156,7 @@ export function Inspector({
           event={event}
           seat={selectedSeat}
           onPreview={onPreview}
+          onNeedMeldPlan={onNeedMeldPlan}
         />
       )}
 
@@ -187,12 +191,14 @@ function PlayerEditor({
   event,
   seat,
   onPreview,
+  onNeedMeldPlan,
 }: {
   state: RoundState
   round: number
   event: number
   seat: Seat
   onPreview: (request: EditRequest) => void
+  onNeedMeldPlan: (request: Extract<EditRequest, { type: 'meld-add' }>) => void
 }) {
   const meldButtons: { type: MeldType; label: string }[] = [
     { type: 'chi', label: 'チー' },
@@ -212,11 +218,24 @@ function PlayerEditor({
           <Plus size={17} />
         </div>
         <div className="meld-actions">
-          {meldButtons.map(({ type, label }) => (
-            <button type="button" key={type} onClick={() => onPreview({ type: 'meld-add', round, event, actor: seat, meldType: type })}>
-              {label}
-            </button>
-          ))}
+          {meldButtons.map(({ type, label }) => {
+            const request: Extract<EditRequest, { type: 'meld-add' }> = {
+              type: 'meld-add',
+              round,
+              event,
+              actor: seat,
+              meldType: type,
+            }
+            return (
+              <button
+                type="button"
+                key={type}
+                onClick={() => canAddMeldNaturally(state, seat, type) ? onPreview(request) : onNeedMeldPlan(request)}
+              >
+                {label}
+              </button>
+            )
+          })}
         </div>
       </section>
       <section className="inspector-section">
