@@ -24,6 +24,19 @@ export function isRed(code: number): boolean {
   return code === 51 || code === 52 || code === 53
 }
 
+export function tileCodeLimit(code: TileCode, rule: Record<string, unknown>): number {
+  const normalized = normalizeTile(code)
+  const suit = Math.floor(normalized / 10)
+  const rank = normalized % 10
+  if (rank !== 5 || suit < 1 || suit > 3) return 4
+  const redCode = (50 + suit) as TileCode
+  const configured = Number(rule[`aka${redCode}`] ?? rule.aka ?? 1)
+  const redLimit = Number.isFinite(configured)
+    ? Math.max(0, Math.min(4, Math.trunc(configured)))
+    : 1
+  return isRed(code) ? redLimit : 4 - redLimit
+}
+
 export function tileLabel(code: number): string {
   if (isRed(code)) return `赤5${SUITS[code - 51]}`
   const suit = Math.floor(code / 10)

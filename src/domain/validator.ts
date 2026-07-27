@@ -1,6 +1,6 @@
 import { isTenpai, isWinningHand, winningTiles } from './hand'
 import { evaluateWin, libraryShanten } from './majiangAdapter'
-import { isRed, normalizeTile, sameTileKind, tileLabel } from './tile'
+import { isRed, normalizeTile, sameTileKind, tileCodeLimit, tileLabel } from './tile'
 import type { Diagnostic, NormalizedEvent, RoundState, Seat, TenhouLog } from './types'
 
 function issue(
@@ -28,6 +28,7 @@ export function validateState(
   const result: Diagnostic[] = []
   const physicalLocations = new Map<string, string>()
   const counts = new Map<number, number>()
+  const exactCounts = new Map<number, number>()
   const redCounts = [0, 0, 0]
 
   for (const tile of Object.values(state.tiles)) {
@@ -39,15 +40,27 @@ export function validateState(
     }
     physicalLocations.set(tile.id, location)
     counts.set(tile.kind, (counts.get(tile.kind) ?? 0) + 1)
+    exactCounts.set(tile.code, (exactCounts.get(tile.code) ?? 0) + 1)
     if (isRed(tile.code)) redCounts[tile.code - 51]! += 1
   }
   for (const [kind, count] of counts) {
     if (count > 4) result.push(issue(state, 'FIFTH_TILE', `${tileLabel(kind)} が${count}枚あります`))
   }
   for (let suit = 0; suit < 3; suit += 1) {
-    const allowed = Number(rule[`aka5${suit + 1}`] ?? rule.aka ?? 1)
+    const redCode = (51 + suit) as 51 | 52 | 53
+    const normalCode = (15 + suit * 10) as 15 | 25 | 35
+    const allowed = tileCodeLimit(redCode, rule)
     if (redCounts[suit]! > allowed) {
       result.push(issue(state, 'RED_TILE_COUNT', `${['萬子', '筒子', '索子'][suit]}の赤5がルール設定（${allowed}枚）を超えています`))
+    }
+    const normalAllowed = tileCodeLimit(normalCode, rule)
+    const normalCount = exactCounts.get(normalCode) ?? 0
+    if (normalCount > normalAllowed) {
+      result.push(issue(
+        state,
+        'NORMAL_FIVE_COUNT',
+        `${['萬子', '筒子', '索子'][suit]}の通常5がルール設定（${normalAllowed}枚）を超えています`,
+      ))
     }
   }
 

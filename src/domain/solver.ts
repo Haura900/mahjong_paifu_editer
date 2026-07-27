@@ -11,7 +11,15 @@ import { isTenpai } from './hand'
 import { evaluateWin } from './majiangAdapter'
 import { decodeMatch, replayRound, snapshotAt } from './replay'
 import { exhaustiveDrawDelta } from './scoring'
-import { ALL_TILE_CODES, isRed, normalizeTile, sameTileKind, tileLabel, tileSort } from './tile'
+import {
+  ALL_TILE_CODES,
+  isRed,
+  normalizeTile,
+  sameTileKind,
+  tileCodeLimit,
+  tileLabel,
+  tileSort,
+} from './tile'
 import { tenpaiSeats } from './validator'
 import type {
   AutoChange,
@@ -285,8 +293,70 @@ function kindCounts(state: RoundState): Map<number, number> {
   return counts
 }
 
+function exactCodeCounts(state: RoundState): Map<number, number> {
+  const counts = new Map<number, number>()
+  for (const tile of visibleTiles(state)) counts.set(tile.code, (counts.get(tile.code) ?? 0) + 1)
+  return counts
+}
+
 function normalCodeForKind(kind: number): TileCode | undefined {
   return ALL_TILE_CODES.find((code) => code < 50 && normalizeTile(code) === kind)
+}
+
+function repairRedFiveInventory(
+  log: TenhouLog,
+  round: number,
+  changes: AutoChange[],
+  locked: Set<string>,
+  options: {
+    protectedRefs?: Iterable<string>
+    avoidSeat?: Seat
+  } = {},
+): string | undefined {
+  const protectedRefs = new Set([...locked, ...(options.protectedRefs ?? [])])
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    const final = replayRound(log, round).snapshots.at(-1)!
+    const counts = exactCodeCounts(final)
+    let violation:
+      | { code: TileCode; replacement: TileCode; count: number; limit: number }
+      | undefined
+
+    for (let suit = 0; suit < 3 && !violation; suit += 1) {
+      const normal = (15 + suit * 10) as TileCode
+      const red = (51 + suit) as TileCode
+      const redCount = counts.get(red) ?? 0
+      const normalCount = counts.get(normal) ?? 0
+      const redLimit = tileCodeLimit(red, log.rule)
+      const normalLimit = tileCodeLimit(normal, log.rule)
+      if (redCount > redLimit) {
+        violation = { code: red, replacement: normal, count: redCount, limit: redLimit }
+      } else if (normalCount > normalLimit) {
+        violation = { code: normal, replacement: red, count: normalCount, limit: normalLimit }
+      }
+    }
+    if (!violation) return undefined
+
+    const candidate = visibleTiles(final)
+      .filter((tile) =>
+        tile.code === violation!.code
+        && !protectedRefs.has(refKey(tile.acquisitionRef)))
+      .sort((a, b) =>
+        candidateCost(final, a, options.avoidSeat, resultWinner(log, round))
+        - candidateCost(final, b, options.avoidSeat, resultWinner(log, round))
+        || refKey(a.acquisitionRef).localeCompare(refKey(b.acquisitionRef)))[0]
+    if (!candidate) {
+      return `${tileLabel(violation.code)}が${violation.count}枚ありますが、交換可能な牌がなくルール設定（${violation.limit}枚）へ補正できません`
+    }
+    updatePhysicalTile(
+      log,
+      candidate,
+      violation.replacement,
+      changes,
+      'automatic',
+      `${tileLabel(violation.code)}がルール設定の${violation.limit}枚を超えるため、同じ5の${tileLabel(violation.replacement)}へ玉突きで差し替え`,
+    )
+  }
+  return '赤5と通常5の枚数補正が収束しませんでした'
 }
 
 function selectSwapCandidate(
@@ -1395,11 +1465,14 @@ function countKans(round: TenhouLog['log'][number]): number {
 
 function firstAvailableTile(state: RoundState, rule: Record<string, unknown>): TileCode {
   const counts = new Map<number, number>()
-  for (const tile of Object.values(state.tiles)) counts.set(tile.kind, (counts.get(tile.kind) ?? 0) + 1)
-  const aka = Number(rule.aka ?? 1)
+  const exact = new Map<number, number>()
+  for (const tile of Object.values(state.tiles)) {
+    counts.set(tile.kind, (counts.get(tile.kind) ?? 0) + 1)
+    exact.set(tile.code, (exact.get(tile.code) ?? 0) + 1)
+  }
   return ALL_TILE_CODES.find((code) => {
-    if (isRed(code) && !aka) return false
     return (counts.get(normalizeTile(code)) ?? 0) < 4
+      && (exact.get(code) ?? 0) < tileCodeLimit(code, rule)
   }) ?? 11
 }
 
@@ -1854,6 +1927,11 @@ export function solveEdit(
       preferredCodes: fifthPreferred,
     })
     if (conflict) return { ok: false, changes: [], diagnostics: [], conflict }
+    conflict = repairRedFiveInventory(output, request.round, changes, locked, {
+      protectedRefs: fifthProtected,
+      avoidSeat: fifthAvoidSeat,
+    })
+    if (conflict) return { ok: false, changes: [], diagnostics: [], conflict }
 
     let candidate = decodeMatch(output)
     const invalidatedReachSeats = new Set(candidate.diagnostics
@@ -1895,6 +1973,11 @@ export function solveEdit(
         protectedRefs: fifthProtected,
         avoidSeat: fifthAvoidSeat,
         preferredCodes: fifthPreferred,
+      })
+      if (conflict) return { ok: false, changes: [], diagnostics: [], conflict }
+      conflict = repairRedFiveInventory(output, request.round, changes, locked, {
+        protectedRefs: fifthProtected,
+        avoidSeat: fifthAvoidSeat,
       })
       if (conflict) return { ok: false, changes: [], diagnostics: [], conflict }
       candidate = decodeMatch(output)

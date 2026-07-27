@@ -53,6 +53,35 @@ function oneRoundLog(round: unknown[]): TenhouLog {
   }
 }
 
+function makeRedFiveInventoryLog(): TenhouLog {
+  const pool = physicalPool()
+  const featured = ([15, 25, 35] as TileCode[])
+    .flatMap((normal, suit) => [
+      ...takeCodes(pool, normal, 4).slice(0, 3),
+      (51 + suit) as TileCode,
+    ])
+  const deals: TileCode[][] = [featured, [], [], []]
+  for (let seat = 0; seat < 4; seat += 1) {
+    deals[seat]!.push(...takeNext(pool, 13 - deals[seat]!.length))
+  }
+  const log = oneRoundLog([
+    [0, 0, 0], [25000, 25000, 25000, 25000], takeNext(pool, 1), [],
+    deals[0], [], [],
+    deals[1], [], [],
+    deals[2], [], [],
+    deals[3], [], [],
+    ['流局', [0, 0, 0, 0]],
+  ])
+  log.rule = {
+    disp: '四南喰赤',
+    aka: 1,
+    aka51: 1,
+    aka52: 1,
+    aka53: 1,
+  }
+  return log
+}
+
 function winningThirteen(): TileCode[] {
   return [11, 12, 13, 21, 22, 23, 31, 32, 33, 45, 45, 45, 47]
 }
@@ -157,6 +186,77 @@ function makeFourKanLog(onePlayer: boolean): TenhouLog {
 }
 
 describe('deterministic automatic correction solver', () => {
+  it.each([
+    ['萬子', 15, 51],
+    ['筒子', 25, 52],
+    ['索子', 35, 53],
+  ] as const)('propagates a %s normal-five to red-five edit without creating a second red', (_suit, normal, red) => {
+    const log = makeRedFiveInventoryLog()
+    const state = decodeMatch(log).rounds[0]!.snapshots[0]!
+    const selected = state.hands[0]!.find((id) => state.tiles[id]!.code === normal)!
+    const result = solveEdit(log, {
+      type: 'tile',
+      round: 0,
+      event: 0,
+      tileId: selected,
+      code: red,
+    })
+
+    expect(result.ok, result.conflict).toBe(true)
+    const final = replayRound(result.output!, 0).snapshots.at(-1)!
+    const codes = Object.values(final.tiles).map((tile) => tile.code)
+    expect(codes.filter((code) => code === red)).toHaveLength(1)
+    expect(codes.filter((code) => code === normal)).toHaveLength(3)
+    expect(result.changes.some((change) =>
+      change.kind === 'automatic'
+      && change.reason.includes('ルール設定'))).toBe(true)
+    expectPlayable(result.output!)
+  })
+
+  it.each([
+    ['萬子', 15, 51],
+    ['筒子', 25, 52],
+    ['索子', 35, 53],
+  ] as const)('propagates a %s red-five to normal-five edit while retaining one red', (_suit, normal, red) => {
+    const log = makeRedFiveInventoryLog()
+    const state = decodeMatch(log).rounds[0]!.snapshots[0]!
+    const selected = state.hands[0]!.find((id) => state.tiles[id]!.code === red)!
+    const result = solveEdit(log, {
+      type: 'tile',
+      round: 0,
+      event: 0,
+      tileId: selected,
+      code: normal,
+    })
+
+    expect(result.ok, result.conflict).toBe(true)
+    const final = replayRound(result.output!, 0).snapshots.at(-1)!
+    const codes = Object.values(final.tiles).map((tile) => tile.code)
+    expect(codes.filter((code) => code === red)).toHaveLength(1)
+    expect(codes.filter((code) => code === normal)).toHaveLength(3)
+    expectPlayable(result.output!)
+  })
+
+  it('rejects changing red 5索 to a fourth normal 5索 when all swap candidates are fixed', () => {
+    const log = makeRedFiveInventoryLog()
+    const state = decodeMatch(log).rounds[0]!.snapshots[0]!
+    const selected = state.hands[0]!.find((id) => state.tiles[id]!.code === 53)!
+    const fixedNormals = state.hands[0]!
+      .map((id) => state.tiles[id]!)
+      .filter((tile) => tile.code === 35)
+      .map((tile) => refKey(tile.acquisitionRef))
+    const result = solveEdit(log, {
+      type: 'tile',
+      round: 0,
+      event: 0,
+      tileId: selected,
+      code: 35,
+    }, { lockedRefs: fixedNormals })
+
+    expect(result.ok).toBe(false)
+    expect(result.conflict).toContain('ルール設定（3枚）')
+  })
+
   it('swaps an existing physical tile instead of creating a fifth copy', () => {
     const decoded = decodeMatch(sample)
     const round = decoded.rounds.findIndex((item) => {

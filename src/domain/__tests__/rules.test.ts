@@ -4,13 +4,17 @@ import { describe, expect, it } from 'vitest'
 import { meldTarget, parseMeldString } from '../codec'
 import { isTenpai, isWinningHand, winningTiles } from '../hand'
 import { exhaustiveDrawDelta } from '../scoring'
-import { ALL_TILE_CODES, normalizeTile, tileImageFilename } from '../tile'
+import { ALL_TILE_CODES, normalizeTile, tileCodeLimit, tileImageFilename } from '../tile'
 
 describe('tile notation and rules', () => {
   it('counts red fives inside the same four physical copies', () => {
     expect(normalizeTile(51)).toBe(15)
     expect(normalizeTile(52)).toBe(25)
     expect(normalizeTile(53)).toBe(35)
+    expect(tileCodeLimit(15, { aka: 1 })).toBe(3)
+    expect(tileCodeLimit(51, { aka: 1 })).toBe(1)
+    expect(tileCodeLimit(35, { aka53: 0, aka: 1 })).toBe(4)
+    expect(tileCodeLimit(53, { aka53: 0, aka: 1 })).toBe(0)
   })
 
   it('maps normal, honor and red-five codes to bundled artwork', () => {
