@@ -1,6 +1,6 @@
-import { isTenpai, isWinningHand } from './hand'
-import { libraryShanten } from './majiangAdapter'
-import { isRed, normalizeTile, tileLabel } from './tile'
+import { isTenpai, isWinningHand, winningTiles } from './hand'
+import { evaluateWin, libraryShanten } from './majiangAdapter'
+import { isRed, normalizeTile, sameTileKind, tileLabel } from './tile'
 import type { Diagnostic, NormalizedEvent, RoundState, Seat, TenhouLog } from './types'
 
 function issue(
@@ -86,8 +86,41 @@ export function validateState(
     const codes = state.hands[winner]!.map((id) => state.tiles[id]!.code)
     const meldCount = state.melds[winner]!.length
     const winCodes = event.type === 'ron' && event.tile ? [...codes, event.tile] : codes
-    if (!isWinningHand(winCodes, meldCount)) {
+    const winningShape = isWinningHand(winCodes, meldCount)
+    if (!winningShape) {
       result.push(issue(state, 'INVALID_WIN_SHAPE', `${event.type === 'ron' ? 'ロン' : 'ツモ'}和了の手牌が和了形ではありません`, 'warning', winner))
+    } else {
+      const evaluated = evaluateWin(state, winner, {
+        selfDraw: event.type === 'tsumo-win',
+        tile: event.tile,
+        target: event.target,
+        event,
+      })
+      if (!evaluated.legal) {
+        result.push(issue(
+          state,
+          'INVALID_WIN_YAKU',
+          `${event.type === 'ron' ? 'ロン' : 'ツモ'}和了に成立する役がありません`,
+          'warning',
+          winner,
+        ))
+      }
+      if (event.type === 'ron') {
+        const waits = winningTiles(codes, meldCount)
+        const riverFuriten = state.rivers[winner]!.some((river) =>
+          waits.some((wait) => sameTileKind(wait, river.code)))
+        if (state.temporaryFuriten[winner] || riverFuriten) {
+          result.push(issue(
+            state,
+            'FURITEN_RON',
+            state.temporaryFuriten[winner]
+              ? '同巡内に和了形を見送っているため、この牌ではロンできません'
+              : '自身の河に和了牌があるため、この牌ではロンできません',
+            'warning',
+            winner,
+          ))
+        }
+      }
     }
   }
 

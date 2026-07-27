@@ -1,5 +1,6 @@
 import { meldTarget, parseMeldString, parseTenhouLog, refKey } from './codec'
 import type { ParsedMeldString } from './codec'
+import { isWinningHand } from './hand'
 import { applyLedger, deltaEntry } from './scoring'
 import { isRed, normalizeTile, sameTileKind, tileLabel, tileSort } from './tile'
 import { validateScoreContinuity, validateState } from './validator'
@@ -57,6 +58,9 @@ function makeInitialState(log: TenhouLog, raw: RawRound, round: number): RoundSt
     rivers: seatArray(() => []),
     melds: seatArray(() => []),
     reach: [false, false, false, false],
+    kanCounts: [0, 0, 0, 0],
+    temporaryFuriten: [false, false, false, false],
+    pendingRonPasses: [false, false, false, false],
     dora: [],
     ura: [],
     tiles: {},
@@ -194,6 +198,10 @@ export function replayRound(log: TenhouLog, roundIndex: number): DecodedRound {
   snapshots.push(cloneSnapshot(state))
 
   const drawTile = (seat: Seat, item: number, index: number): void => {
+    state.pendingRonPasses.forEach((passed, player) => {
+      if (passed) state.temporaryFuriten[player] = true
+    })
+    state.pendingRonPasses.fill(false)
     const ref: RawRef = { round: roundIndex, section: 'draw', seat, index }
     const tileId = allocateTile(state, item as TileCode, 'draw', ref, eventCounter + 1, seat)
     state.lastDraw = { seat, tileId }
@@ -211,6 +219,7 @@ export function replayRound(log: TenhouLog, roundIndex: number): DecodedRound {
   }
 
   const discardTile = (seat: Seat, item: number | string, index: number): void => {
+    if (!state.reach[seat]) state.temporaryFuriten[seat] = false
     const ref: RawRef = { round: roundIndex, section: 'discard', seat, index }
     const reach = typeof item === 'string' && item.startsWith('r')
     const rawCode = typeof item === 'string' ? Number(item.slice(1)) : item
@@ -262,6 +271,16 @@ export function replayRound(log: TenhouLog, roundIndex: number): DecodedRound {
       reach,
       label: `${state.names[seat]} ${reach ? 'リーチ・' : ''}${tsumogiri ? 'ツモ切り' : '手出し'} ${tileLabel(trace.code)}`,
     })
+    state.pendingRonPasses.fill(false)
+    for (let player = 0; player < 4; player += 1) {
+      if (player === seat) continue
+      const target = player as Seat
+      const codes = state.hands[target]!.map((id) => state.tiles[id]!.code)
+      state.pendingRonPasses[target] = isWinningHand(
+        [...codes, trace.code],
+        state.melds[target]!.length,
+      )
+    }
     if (reach) {
       if (state.scores[seat]! < 1000) {
         addDiagnostic(state, 'INSUFFICIENT_REACH_SCORE', `${state.names[seat]}はリーチ棒を支払えません`, 'error', seat, ref)
@@ -323,6 +342,10 @@ export function replayRound(log: TenhouLog, roundIndex: number): DecodedRound {
   }
 
   const processMeld = (actor: Seat, rawString: string, rawRef: RawRef): ParsedMeldString | undefined => {
+    state.pendingRonPasses.forEach((passed, player) => {
+      if (passed) state.temporaryFuriten[player] = true
+    })
+    state.pendingRonPasses.fill(false)
     const parsed = parseMeldString(rawString)
     if (!parsed) {
       addDiagnostic(state, 'UNKNOWN_MELD', `副露表現「${rawString}」を解析できません`, 'error', actor, rawRef)
@@ -380,6 +403,18 @@ export function replayRound(log: TenhouLog, roundIndex: number): DecodedRound {
       label: `${state.names[actor]} ${meldLabel(parsed.type)} ${parsed.codes.map(tileLabel).join('・')}`,
     })
     if (parsed.type === 'ankan' || parsed.type === 'kakan' || parsed.type === 'daiminkan') {
+      const totalKans = state.kanCounts.reduce((sum, count) => sum + count, 0)
+      if (totalKans >= 4) {
+        addDiagnostic(
+          state,
+          'FIFTH_KAN',
+          '5回目のカンはできません',
+          'error',
+          actor,
+          rawRef,
+        )
+      }
+      state.kanCounts[actor]! += 1
       revealKanDora()
       rinshan = true
     }
@@ -485,8 +520,15 @@ export function replayRound(log: TenhouLog, roundIndex: number): DecodedRound {
     state.riichiSticks = 0
   } else {
     const delta = Array.isArray(result[1]) ? result[1] as number[] : [0, 0, 0, 0]
-    state.scores = applyLedger(state.scores, [deltaEntry('draw-penalty', '流局ノーテン罰符', delta)])
-    emit({ type: 'draw-game', scoreDelta: delta, label: `流局（${delta.map((value) => value >= 0 ? `+${value}` : value).join(' / ')}）` })
+    state.scores = applyLedger(state.scores, [deltaEntry('draw-penalty', `${resultLabel}の局収支`, delta)])
+    const hasDelta = delta.some((value) => value !== 0)
+    emit({
+      type: 'draw-game',
+      scoreDelta: delta,
+      label: hasDelta
+        ? `${resultLabel}（${delta.map((value) => value >= 0 ? `+${value}` : value).join(' / ')}）`
+        : resultLabel,
+    })
   }
   state.ended = true
   if (snapshots.length) {

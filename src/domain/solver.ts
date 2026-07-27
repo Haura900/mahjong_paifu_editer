@@ -8,6 +8,7 @@ import {
   writeRawRef,
 } from './codec'
 import { isTenpai } from './hand'
+import { evaluateWin } from './majiangAdapter'
 import { decodeMatch, replayRound, snapshotAt } from './replay'
 import { exhaustiveDrawDelta } from './scoring'
 import { ALL_TILE_CODES, isRed, normalizeTile, sameTileKind, tileLabel, tileSort } from './tile'
@@ -18,6 +19,7 @@ import type {
   EditRequest,
   Meld,
   MeldType,
+  NormalizedEvent,
   RawRef,
   RawTile,
   RoundState,
@@ -966,6 +968,12 @@ function applyMeldAdd(
   changes: AutoChange[],
   locked: Set<string>,
 ): string | undefined {
+  if (
+    ['daiminkan', 'ankan', 'kakan'].includes(request.meldType)
+    && countKans(log.log[request.round]!) >= 4
+  ) {
+    return '5回目のカンはできません。1局で宣言できるカンは合計4回までです'
+  }
   if (request.forced) {
     if (request.meldType === 'ankan') return applyForcedAnkan(log, request, changes, locked)
     if (request.meldType === 'kakan') return applyForcedKakan(log, request, changes, locked)
@@ -1160,6 +1168,9 @@ function applyMeldChange(
   if (!meld) return '変更する副露がありません'
   if (meld.type === request.meldType) return undefined
   if (meld.type === 'pon' && request.meldType === 'kakan') {
+    if (countKans(log.log[request.round]!) >= 4) {
+      return '5回目のカンはできません。1局で宣言できるカンは合計4回までです'
+    }
     const handId = state.hands[request.actor]!.find((id) => sameTileKind(state.tiles[id]!.code, meld.codes[0]!))
     if (!handId) return '加槓に必要な4枚目を手牌に持っていません'
     const added = state.tiles[handId]!.code
@@ -1287,11 +1298,214 @@ function xorshift(seed: number): () => number {
   }
 }
 
+function trimRoundAfterEvent(
+  log: TenhouLog,
+  round: number,
+  event: number,
+  changes: AutoChange[],
+  reason: string,
+): RoundState {
+  const replayed = replayRound(log, round)
+  const state = snapshotAt(replayed, event)
+  for (let player = 0; player < 4; player += 1) {
+    const seat = player as Seat
+    for (const [section, cursor] of [
+      ['draw', state.streamCursors.draws[seat]!] as const,
+      ['discard', state.streamCursors.discards[seat]!] as const,
+    ]) {
+      const stream = getRoundSection(log.log[round]!, section, seat)
+      if (cursor >= stream.length) continue
+      const removed = stream.splice(cursor)
+      changes.push({
+        id: `change-${changes.length + 1}`,
+        kind: 'automatic',
+        ref: { round, section, seat, index: cursor },
+        before: JSON.stringify(removed),
+        after: '',
+        reason,
+      })
+    }
+  }
+  const dora = log.log[round]![2]
+  if (state.dora.length < dora.length) {
+    const removed = dora.splice(state.dora.length)
+    changes.push({
+      id: `change-${changes.length + 1}`,
+      kind: 'automatic',
+      ref: { round, section: 'dora', index: state.dora.length },
+      before: JSON.stringify(removed),
+      after: '',
+      reason: `${reason}。未到達のカンドラ表示牌を王牌へ戻す`,
+    })
+  }
+  return state
+}
+
+function replaceRoundResult(
+  log: TenhouLog,
+  round: number,
+  result: unknown[],
+  changes: AutoChange[],
+  reason: string,
+): void {
+  const before = log.log[round]![16]
+  if (JSON.stringify(before) === JSON.stringify(result)) return
+  log.log[round]![16] = result
+  changes.push({
+    id: `change-${changes.length + 1}`,
+    kind: 'automatic',
+    ref: { round, section: 'discard', index: -1 },
+    before: JSON.stringify(before),
+    after: JSON.stringify(result),
+    reason,
+  })
+}
+
+function editedDrawEvaluation(
+  log: TenhouLog,
+  round: number,
+  ref: RawRef,
+): { event: number; actor: Seat; state: RoundState; delta: [number, number, number, number]; yaku: string[] } | undefined {
+  const replayed = replayRound(log, round)
+  const event = replayed.events.find((candidate) =>
+    (candidate.type === 'draw' || candidate.type === 'rinshan-draw')
+    && candidate.rawRef
+    && refKey(candidate.rawRef) === refKey(ref))
+  if (!event || event.actor === undefined) return undefined
+  const state = snapshotAt(replayed, event.index)
+  const evaluated = evaluateWin(state, event.actor, {
+    selfDraw: true,
+    tile: event.tile,
+    event,
+  })
+  if (!evaluated.legal || !evaluated.delta) return undefined
+  return {
+    event: event.index,
+    actor: event.actor,
+    state,
+    delta: evaluated.delta,
+    yaku: evaluated.yaku ?? [],
+  }
+}
+
+function convertEditedDrawToTsumo(
+  log: TenhouLog,
+  round: number,
+  win: ReturnType<typeof editedDrawEvaluation> & {},
+  changes: AutoChange[],
+): void {
+  if (!win) return
+  const reason = `${win.state.names[win.actor]}の編集したツモが役あり和了形になったため、その時点でツモ和了へ変更`
+  trimRoundAfterEvent(log, round, win.event, changes, reason)
+  replaceRoundResult(
+    log,
+    round,
+    ['和了', win.delta, [win.actor, win.actor]],
+    changes,
+    `${reason}${win.yaku.length ? `（${win.yaku.join('・')}）` : ''}`,
+  )
+}
+
+interface AbortiveDrawPoint {
+  label: '四風連打' | '四槓散了'
+  event: number
+  actor?: Seat
+}
+
+function abortiveDrawPoint(log: TenhouLog, round: number): AbortiveDrawPoint | undefined {
+  const replayed = replayRound(log, round)
+  const points: AbortiveDrawPoint[] = []
+  const hasLegalRon = (discard: NormalizedEvent): boolean => {
+    const rons = replayed.events.filter((event) =>
+      event.type === 'ron' && event.tileId === discard.tileId)
+    return rons.some((ron) =>
+      !replayed.diagnostics.some((diagnostic) =>
+        diagnostic.event === ron.index
+        && diagnostic.seat === ron.actor
+        && ['INVALID_WIN_SHAPE', 'INVALID_WIN_YAKU', 'FURITEN_RON'].includes(diagnostic.code)))
+  }
+  const firstDiscards = replayed.events.filter((event) => event.type === 'discard').slice(0, 4)
+  if (firstDiscards.length === 4) {
+    const fourth = firstDiscards[3]!
+    const actors = new Set(firstDiscards.map((event) => event.actor))
+    const sameWind = fourth.tile !== undefined
+      && fourth.tile >= 41
+      && fourth.tile <= 44
+      && firstDiscards.every((event) => event.tile === fourth.tile)
+    const interrupted = replayed.events.some((event) =>
+      event.index < fourth.index
+      && ['chi', 'pon', 'daiminkan', 'ankan', 'kakan'].includes(event.type))
+    if (actors.size === 4 && sameWind && !interrupted && !hasLegalRon(fourth)) {
+      points.push({ label: '四風連打', event: fourth.index, actor: fourth.actor })
+    }
+  }
+
+  let kans = 0
+  const kanActors = new Set<Seat>()
+  let fourthKan = -1
+  for (const event of replayed.events) {
+    if (!['daiminkan', 'ankan', 'kakan'].includes(event.type) || event.actor === undefined) continue
+    kans += 1
+    kanActors.add(event.actor)
+    if (kans === 4 && kanActors.size >= 2) {
+      fourthKan = event.index
+      break
+    }
+  }
+  if (fourthKan >= 0) {
+    const discard = replayed.events.find((event) =>
+      event.type === 'discard' && event.index > fourthKan)
+    if (discard && !hasLegalRon(discard)) {
+      points.push({ label: '四槓散了', event: discard.index, actor: discard.actor })
+    }
+  }
+  return points.sort((a, b) => a.event - b.event)[0]
+}
+
+function reconcileAbortiveDraw(
+  log: TenhouLog,
+  round: number,
+  changes: AutoChange[],
+): boolean {
+  const point = abortiveDrawPoint(log, round)
+  if (!point) return false
+  const state = trimRoundAfterEvent(
+    log,
+    round,
+    point.event,
+    changes,
+    `${point.label}が成立したため、それ以降の手順を牌山へ戻す`,
+  )
+  const ura = log.log[round]![3]
+  if (ura.length) {
+    const removed = ura.splice(0)
+    changes.push({
+      id: `change-${changes.length + 1}`,
+      kind: 'automatic',
+      ref: { round, section: 'ura', index: 0 },
+      before: JSON.stringify(removed),
+      after: '',
+      reason: `${point.label}では裏ドラを開かないため王牌へ戻す`,
+    })
+  }
+  replaceRoundResult(
+    log,
+    round,
+    [point.label],
+    changes,
+    point.label === '四風連打'
+      ? `4人の最初の打牌が${point.actor === undefined ? '同じ風牌' : tileLabel(state.lastDiscard ? state.tiles[state.lastDiscard.tileId]!.code : 41)}で揃ったため四風連打`
+      : '2人以上が合計4回カンし、その後の打牌が通ったため四槓散了',
+  )
+  return true
+}
+
 function convertBrokenWinToDraw(
   log: TenhouLog,
   round: number,
   seed: number,
   changes: AutoChange[],
+  cause = '和了条件',
 ): void {
   const replayed = replayRound(log, round)
   const winEvent = replayed.events.findIndex((event) => event.type === 'ron' || event.type === 'tsumo-win')
@@ -1358,7 +1572,7 @@ function convertBrokenWinToDraw(
     ref: { round, section: 'discard', index: -1 },
     before: JSON.stringify(before),
     after: JSON.stringify(log.log[round]![16]),
-    reason: `和了形が成立しなくなったため、乱数シード${seed}で残り${generated}巡の牌山を補完し、${ready.length}人聴牌の流局へ変更`,
+    reason: `${cause}が成立しなくなったため、乱数シード${seed}で残り${generated}巡の牌山を補完し、${ready.length}人聴牌の流局へ変更`,
   })
 }
 
@@ -1376,6 +1590,8 @@ export function solveEdit(
   const fifthProtected = new Set<string>()
   const fifthPreferred: TileCode[] = []
   let fifthAvoidSeat: Seat | undefined = 'actor' in request ? request.actor : undefined
+  let editedDrawRef: RawRef | undefined
+  let baselineEditedDrawLegal = false
   let conflict: string | undefined
 
   try {
@@ -1388,6 +1604,12 @@ export function solveEdit(
         if (!trace) conflict = '指定された物理牌が現在の盤面にありません'
         else if (locked.has(refKey(trace.acquisitionRef))) conflict = 'この牌の取得元は固定されています'
         else {
+          if (trace.origin === 'draw') {
+            editedDrawRef = trace.acquisitionRef
+            baselineEditedDrawLegal = Boolean(
+              editedDrawEvaluation(input, request.round, trace.acquisitionRef),
+            )
+          }
           fifthProtected.add(refKey(trace.acquisitionRef))
           fifthAvoidSeat = trace.owner
           const completeTrace = Object.values(sourceRound.snapshots.at(-1)!.tiles)
@@ -1464,12 +1686,24 @@ export function solveEdit(
       )
     }
     if (invalidatedReachSeats.size) candidate = decodeMatch(output)
-    const introducedInvalidWin = candidate.diagnostics.some((diagnostic) =>
+
+    if (editedDrawRef && !baselineEditedDrawLegal) {
+      const newTsumo = editedDrawEvaluation(output, request.round, editedDrawRef)
+      if (newTsumo) {
+        convertEditedDrawToTsumo(output, request.round, newTsumo, changes)
+        candidate = decodeMatch(output)
+      }
+    }
+
+    const abortiveDraw = reconcileAbortiveDraw(output, request.round, changes)
+    if (abortiveDraw) candidate = decodeMatch(output)
+
+    const invalidWin = candidate.diagnostics.find((diagnostic) =>
       diagnostic.round === request.round
-      && diagnostic.code === 'INVALID_WIN_SHAPE'
+      && ['INVALID_WIN_SHAPE', 'INVALID_WIN_YAKU', 'FURITEN_RON'].includes(diagnostic.code)
       && !baseline.diagnostics.some((base) => diagnosticKey(base) === diagnosticKey(diagnostic)))
-    if (introducedInvalidWin) {
-      convertBrokenWinToDraw(output, request.round, seed, changes)
+    if (invalidWin) {
+      convertBrokenWinToDraw(output, request.round, seed, changes, invalidWin.message)
       conflict = repairAllFifthTiles(output, request.round, changes, locked, {
         protectedRefs: fifthProtected,
         avoidSeat: fifthAvoidSeat,

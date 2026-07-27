@@ -21,6 +21,8 @@ describe('tenhou.net/6 sample codec and replay', () => {
   it('replays all streams without losing physical tiles', () => {
     const match = decodeMatch(sampleText)
     expect(match.diagnostics.filter((item) => item.severity === 'error')).toEqual([])
+    expect(match.diagnostics.filter((item) =>
+      ['INVALID_WIN_SHAPE', 'INVALID_WIN_YAKU', 'FURITEN_RON'].includes(item.code))).toEqual([])
     for (const round of match.rounds) {
       const final = round.snapshots.at(-1)!
       const counts = new Map<number, number>()

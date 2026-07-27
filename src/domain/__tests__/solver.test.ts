@@ -24,6 +24,138 @@ function expectPlayable(log: TenhouLog) {
   expect(decoded.rounds.every((round) => round.snapshots.at(-1)?.ended)).toBe(true)
 }
 
+function physicalPool(): TileCode[] {
+  return ALL_TILE_CODES
+    .filter((code) => code < 50)
+    .flatMap((code) => Array<TileCode>(4).fill(code))
+}
+
+function takeCodes(pool: TileCode[], code: TileCode, count: number): TileCode[] {
+  const result: TileCode[] = []
+  for (let copy = 0; copy < count; copy += 1) {
+    const index = pool.indexOf(code)
+    if (index < 0) throw new Error(`${code} is exhausted`)
+    result.push(pool.splice(index, 1)[0]!)
+  }
+  return result
+}
+
+function takeNext(pool: TileCode[], count: number): TileCode[] {
+  return pool.splice(0, count)
+}
+
+function oneRoundLog(round: unknown[]): TenhouLog {
+  return {
+    title: ['', ''],
+    name: ['A', 'B', 'C', 'D'],
+    rule: { disp: '四南喰', aka: 0 },
+    log: [round as TenhouLog['log'][number]],
+  }
+}
+
+function winningThirteen(): TileCode[] {
+  return [11, 12, 13, 21, 22, 23, 31, 32, 33, 45, 45, 45, 47]
+}
+
+function makeEditedTsumoLog(): TenhouLog {
+  const pool = physicalPool()
+  const hand0 = winningThirteen().flatMap((code) => takeCodes(pool, code, 1))
+  const draw = takeCodes(pool, 44, 1)
+  const dora = takeNext(pool, 1)
+  const hand1 = takeNext(pool, 13)
+  const hand2 = takeNext(pool, 13)
+  const hand3 = takeNext(pool, 13)
+  return oneRoundLog([
+    [0, 0, 0], [25000, 25000, 25000, 25000], dora, [],
+    hand0, draw, [60],
+    hand1, [], [],
+    hand2, [], [],
+    hand3, [], [],
+    ['流局', [0, 0, 0, 0]],
+  ])
+}
+
+function makeEditedFuritenLog(): TenhouLog {
+  const pool = physicalPool()
+  const winner = winningThirteen().flatMap((code) => takeCodes(pool, code, 1))
+  const firstDraw = takeCodes(pool, 44, 1)
+  const winningDiscard = takeCodes(pool, 47, 1)
+  const dora = takeNext(pool, 1)
+  const hand0 = takeNext(pool, 13)
+  const hand1 = takeNext(pool, 13)
+  const hand3 = takeNext(pool, 13)
+  return oneRoundLog([
+    [0, 0, 0], [25000, 25000, 25000, 25000], dora, [],
+    hand0, firstDraw, [60],
+    hand1, winningDiscard, [60],
+    winner, [], [],
+    hand3, [], [],
+    ['和了', [0, -1000, 1000, 0], [2, 1]],
+  ])
+}
+
+function makeFourWindsCandidate(): TenhouLog {
+  const pool = physicalPool()
+  const draws = [
+    takeCodes(pool, 42, 1)[0]!,
+    takeCodes(pool, 42, 1)[0]!,
+    takeCodes(pool, 42, 1)[0]!,
+    takeCodes(pool, 44, 1)[0]!,
+  ]
+  const dora = takeNext(pool, 1)
+  const hands = [0, 1, 2, 3].map(() => takeNext(pool, 13))
+  return oneRoundLog([
+    [0, 0, 0], [25000, 25000, 25000, 25000], dora, [],
+    hands[0], [draws[0]], [60],
+    hands[1], [draws[1]], [60],
+    hands[2], [draws[2]], [60],
+    hands[3], [draws[3]], [60],
+    ['流局', [0, 0, 0, 0]],
+  ])
+}
+
+function makeFourKanLog(onePlayer: boolean): TenhouLog {
+  const pool = physicalPool()
+  const deals: TileCode[][] = [[], [], [], []]
+  const draws: TileCode[][] = [[], [], [], []]
+  const discards: (number | string)[][] = [[], [], [], []]
+  if (onePlayer) {
+    for (const code of [11, 12, 13, 14] as TileCode[]) {
+      deals[0]!.push(...takeCodes(pool, code, 3))
+      draws[0]!.push(...takeCodes(pool, code, 1))
+      discards[0]!.push(`a${String(code).repeat(4)}`)
+    }
+    deals[0]!.push(...takeNext(pool, 1))
+    draws[0]!.push(...takeNext(pool, 1))
+    discards[0]!.push(60)
+  } else {
+    for (const [seat, codes] of [[0, [11, 12]], [1, [13, 14]]] as const) {
+      for (const code of codes) {
+        deals[seat]!.push(...takeCodes(pool, code, 3))
+        draws[seat]!.push(...takeCodes(pool, code, 1))
+        discards[seat]!.push(`a${String(code).repeat(4)}`)
+      }
+    }
+    for (const seat of [0, 1] as const) {
+      deals[seat]!.push(...takeNext(pool, 7))
+      draws[seat]!.push(...takeNext(pool, 1))
+      discards[seat]!.push(60)
+    }
+  }
+  const dora = takeNext(pool, 5)
+  for (let seat = 0; seat < 4; seat += 1) {
+    deals[seat]!.push(...takeNext(pool, 13 - deals[seat]!.length))
+  }
+  return oneRoundLog([
+    [0, 0, 0], [25000, 25000, 25000, 25000], dora, [],
+    deals[0], draws[0], discards[0],
+    deals[1], draws[1], discards[1],
+    deals[2], draws[2], discards[2],
+    deals[3], draws[3], discards[3],
+    ['流局', [0, 0, 0, 0]],
+  ])
+}
+
 describe('deterministic automatic correction solver', () => {
   it('swaps an existing physical tile instead of creating a fifth copy', () => {
     const decoded = decodeMatch(sample)
@@ -428,5 +560,91 @@ describe('deterministic automatic correction solver', () => {
     const loaded = parseProject(serializeProject(original))
     expect(loaded).toEqual(original)
     expectPlayable(loaded.current)
+  })
+
+  it('turns an edited yaku-bearing draw into a scored tsumo at that draw', () => {
+    const log = makeEditedTsumoLog()
+    const replayed = replayRound(log, 0)
+    const draw = replayed.events.find((event) => event.type === 'draw')!
+    const result = solveEdit(log, {
+      type: 'tile',
+      round: 0,
+      event: draw.index,
+      tileId: draw.tileId!,
+      code: 47,
+    })
+
+    expect(result.ok, result.conflict).toBe(true)
+    expect(result.output!.log[0]![16][0]).toBe('和了')
+    expect(result.output!.log[0]![16][2]).toEqual([0, 0])
+    expect(getRoundSection(result.output!.log[0]!, 'discard', 0)).toEqual([])
+    expect(result.changes.some((change) => change.reason.includes('ツモ和了'))).toBe(true)
+    expectPlayable(result.output!)
+  })
+
+  it('converts a later ron to exhaustive draw when an edited earlier discard creates same-turn furiten', () => {
+    const log = makeEditedFuritenLog()
+    expect(decodeMatch(log).diagnostics.some((item) => item.code === 'FURITEN_RON')).toBe(false)
+    const replayed = replayRound(log, 0)
+    const firstDiscard = replayed.events.find((event) => event.type === 'discard')!
+    const result = solveEdit(log, {
+      type: 'tile',
+      round: 0,
+      event: firstDiscard.index,
+      tileId: firstDiscard.tileId!,
+      code: 47,
+    }, { seed: 8172 })
+
+    expect(result.ok, result.conflict).toBe(true)
+    expect(result.output!.log[0]![16][0]).toBe('流局')
+    expect(result.changes.some((change) => change.reason.includes('同巡内'))).toBe(true)
+    expectPlayable(result.output!)
+  }, 20_000)
+
+  it('ends as four-winds abortive draw when the fourth first discard is edited to the same wind', () => {
+    const log = makeFourWindsCandidate()
+    const replayed = replayRound(log, 0)
+    const fourth = replayed.events.filter((event) => event.type === 'discard')[3]!
+    const result = solveEdit(log, {
+      type: 'tile',
+      round: 0,
+      event: fourth.index,
+      tileId: fourth.tileId!,
+      code: 42,
+    })
+
+    expect(result.ok, result.conflict).toBe(true)
+    expect(result.output!.log[0]![16]).toEqual(['四風連打'])
+    expect(result.changes.some((change) => change.reason.includes('四風連打'))).toBe(true)
+    expectPlayable(result.output!)
+  })
+
+  it('ends after the passed discard following four kans made by multiple players', () => {
+    const log = makeFourKanLog(false)
+    const result = solveEdit(log, { type: 'score', round: 0, seat: 0, score: 26000 })
+
+    expect(result.ok, result.conflict).toBe(true)
+    expect(result.output!.log[0]![16]).toEqual(['四槓散了'])
+    expect(result.changes.some((change) => change.reason.includes('2人以上'))).toBe(true)
+    expectPlayable(result.output!)
+  })
+
+  it('lets one player complete four kans but rejects a fifth kan', () => {
+    const log = makeFourKanLog(true)
+    const continued = solveEdit(log, { type: 'score', round: 0, seat: 0, score: 26000 })
+    expect(continued.ok, continued.conflict).toBe(true)
+    expect(continued.output!.log[0]![16][0]).toBe('流局')
+    expect(replayRound(continued.output!, 0).snapshots.at(-1)!.kanCounts).toEqual([4, 0, 0, 0])
+
+    const fifth = solveEdit(log, {
+      type: 'meld-add',
+      round: 0,
+      event: replayRound(log, 0).events.length - 1,
+      actor: 0,
+      meldType: 'ankan',
+      forced: { codes: [15, 15, 15, 15] },
+    })
+    expect(fifth.ok).toBe(false)
+    expect(fifth.conflict).toContain('5回目')
   })
 })

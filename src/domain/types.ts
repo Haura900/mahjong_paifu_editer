@@ -138,6 +138,12 @@ export interface RoundState {
   rivers: RiverTile[][]
   melds: Meld[][]
   reach: boolean[]
+  /** Number of completed kans by each player. A kakan counts once, not once per source pon. */
+  kanCounts: number[]
+  /** A passed winning shape blocks ron until the player's next non-reach discard. */
+  temporaryFuriten: boolean[]
+  /** Winning shapes offered by the latest discard; committed when play continues past it. */
+  pendingRonPasses: boolean[]
   dora: string[]
   ura: string[]
   tiles: Record<string, TileTrace>

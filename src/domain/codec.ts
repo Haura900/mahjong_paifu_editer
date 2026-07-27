@@ -147,8 +147,18 @@ function validateRawRound(value: unknown, round: number, errors: Diagnostic[]): 
     }
   }
   const result = value[16]
-  if (!Array.isArray(result) || (result[0] !== '和了' && result[0] !== '流局')) {
-    errors.push(diagnostic(`局${round + 1}: 結果は「和了」または「流局」で始まる必要があります`, round))
+  const resultLabels = new Set([
+    '和了',
+    '流局',
+    '流し満貫',
+    '九種九牌',
+    '四風連打',
+    '四家立直',
+    '三家和了',
+    '四槓散了',
+  ])
+  if (!Array.isArray(result) || !resultLabels.has(String(result[0]))) {
+    errors.push(diagnostic(`局${round + 1}: 結果の種別が天鳳形式の終局名ではありません`, round))
   }
 }
 
@@ -255,4 +265,3 @@ export function refKey(ref: RawRef): string {
 export function seatName(seat: Seat): string {
   return ['東家', '南家', '西家', '北家'][seat]!
 }
-
