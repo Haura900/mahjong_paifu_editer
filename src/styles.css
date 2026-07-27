@@ -609,14 +609,23 @@ textarea:focus-visible {
   font-weight: 700;
 }
 
-.hand-row {
+.tiles-row {
   position: absolute;
   left: 0;
   bottom: 34px;
   display: flex;
   align-items: flex-end;
+  width: 100%;
+  min-width: 0;
+  gap: clamp(7px, 1vw, 12px);
+}
+
+.hand-row {
+  display: flex;
+  min-width: 0;
+  flex: 0 0 auto;
+  align-items: flex-end;
   justify-content: flex-start;
-  min-width: 100%;
   gap: 1px;
 }
 
@@ -643,13 +652,11 @@ textarea:focus-visible {
 }
 
 .meld-row {
-  position: absolute;
-  right: 0;
-  bottom: 34px;
   display: flex;
-  max-width: 48%;
+  min-width: 0;
+  flex: 0 0 auto;
   align-items: flex-end;
-  justify-content: flex-end;
+  justify-content: flex-start;
   gap: 3px;
 }
 
@@ -1754,16 +1761,19 @@ textarea:focus-visible {
 
 .meld-tile-picker {
   display: grid;
-  grid-template-columns: repeat(9, 1fr);
-  gap: 3px;
+  grid-template-columns: repeat(9, minmax(0, 1fr));
+  column-gap: 6px;
+  row-gap: 7px;
 }
 
 .meld-tile-picker > button {
   display: grid;
+  width: 100%;
   min-width: 0;
-  height: 40px;
-  padding: 2px;
+  height: 48px;
+  padding: 4px;
   place-items: center;
+  overflow: hidden;
   border: 1px solid #d4dad7;
   border-radius: 4px;
   background: #fff;
@@ -1771,8 +1781,12 @@ textarea:focus-visible {
 }
 
 .meld-tile-picker .tile-artwork {
-  width: 82%;
-  height: 90%;
+  width: auto;
+  height: 38px;
+  min-width: 0;
+  min-height: 0;
+  max-width: 34px;
+  max-height: 100%;
   object-fit: contain;
 }
 

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { cloneLog, getRoundSection, refKey } from '../codec'
+import { cloneLog, getRoundSection, refKey, writeRawRef } from '../codec'
 import { winningTiles } from '../hand'
 import {
   applyProjectEdit,
@@ -174,6 +174,27 @@ describe('deterministic automatic correction solver', () => {
     expectPlayable(result.output!)
   }, 20_000)
 
+  it('creates the requested East 2 third-discard 2筒 pon without leaving a fifth honor tile', () => {
+    const result = solveEdit(sample, {
+      type: 'meld-add',
+      round: 1,
+      event: 6,
+      actor: 1,
+      meldType: 'pon',
+      forced: {
+        codes: [22, 22, 22],
+        target: 3,
+      },
+    })
+    expect(result.ok, result.conflict).toBe(true)
+    expect(result.changes.some((change) => change.reason.includes('玉突き'))).toBe(true)
+    const final = replayRound(result.output!, 1).snapshots.at(-1)!
+    expect(final.melds[1]!.some((meld) =>
+      meld.type === 'pon'
+      && meld.codes.every((code) => sameTileKind(code, 22)))).toBe(true)
+    expectPlayable(result.output!)
+  }, 30_000)
+
   it.each([
     ['ポン', { meldType: 'pon' as const, forced: { codes: [14, 14, 14] as TileCode[], target: 2 as const } }],
     ['大明槓', { meldType: 'daiminkan' as const, forced: { codes: [24, 24, 24, 24] as TileCode[], target: 3 as const } }],
@@ -191,6 +212,90 @@ describe('deterministic automatic correction solver', () => {
     expect(result.changes.some((change) => change.kind === 'automatic')).toBe(true)
     expectPlayable(result.output!)
   }, 40_000)
+
+  it('borrows other players physical 2萬 tiles when creating a forced concealed kan', () => {
+    const result = solveEdit(sample, {
+      type: 'meld-add',
+      round: 0,
+      event: 64,
+      actor: 0,
+      meldType: 'ankan',
+      forced: { codes: [12, 12, 12, 12] },
+    })
+    expect(result.ok, result.conflict).toBe(true)
+    const final = replayRound(result.output!, 0).snapshots.at(-1)!
+    expect(final.melds[0]!.some((meld) =>
+      meld.type === 'ankan'
+      && meld.codes.length === 4
+      && meld.codes.every((code) => sameTileKind(code, 12)))).toBe(true)
+    expectPlayable(result.output!)
+  }, 30_000)
+
+  it('replaces an existing concealed kan as a whole when a river edit needs its tile kind', () => {
+    const created = solveEdit(sample, {
+      type: 'meld-add',
+      round: 0,
+      event: 64,
+      actor: 0,
+      meldType: 'ankan',
+      forced: { codes: [11, 11, 11, 11] },
+    })
+    expect(created.ok, created.conflict).toBe(true)
+    const beforeEdit = replayRound(created.output!, 0).snapshots.at(-1)!
+    const river1s = beforeEdit.rivers.flat().find((river) =>
+      sameTileKind(beforeEdit.tiles[river.tileId]!.code, 31))!
+    const changed = solveEdit(created.output!, {
+      type: 'tile',
+      round: 0,
+      event: beforeEdit.eventIndex,
+      tileId: river1s.tileId,
+      code: 11,
+    })
+    expect(changed.ok, changed.conflict).toBe(true)
+    expect(changed.changes.some((change) => change.reason.includes('組単位'))).toBe(true)
+    const afterEdit = replayRound(changed.output!, 0).snapshots.at(-1)!
+    const ankan = afterEdit.melds[0]!.find((meld) => meld.type === 'ankan')!
+    expect(ankan.codes).toHaveLength(4)
+    expect(ankan.codes.every((code) => sameTileKind(code, ankan.codes[0]!))).toBe(true)
+    expectPlayable(changed.output!)
+  }, 40_000)
+
+  it('uses another players winning hand before making a no-op swap inside the edited hand', () => {
+    const arranged = cloneLog(sample)
+    const source = decodeMatch(arranged).rounds[1]!
+    const final = source.snapshots.at(-1)!
+    const rewriteDealTile = (seat: 0 | 1 | 2 | 3, index: number, code: TileCode) => {
+      const trace = Object.values(final.tiles).find((tile) =>
+        tile.acquisitionRef.section === 'deal'
+        && tile.acquisitionRef.seat === seat
+        && tile.acquisitionRef.index === index)!
+      const refs = new Map([trace.acquisitionRef, ...trace.references].map((ref) => [refKey(ref), ref]))
+      refs.forEach((ref) => writeRawRef(arranged, ref, code))
+    }
+    rewriteDealTile(0, 10, 11)
+    rewriteDealTile(2, 6, 12)
+    rewriteDealTile(0, 1, 11)
+    rewriteDealTile(3, 9, 14)
+    expectPlayable(arranged)
+
+    const arrangedStart = decodeMatch(arranged).rounds[1]!.snapshots[0]!
+    const selected = arrangedStart.hands[0]!.find((id) => sameTileKind(arrangedStart.tiles[id]!.code, 13))!
+    const result = solveEdit(arranged, {
+      type: 'tile',
+      round: 1,
+      event: 0,
+      tileId: selected,
+      code: 11,
+    })
+    expect(result.ok, result.conflict).toBe(true)
+    expect(result.changes.some((change) =>
+      change.kind === 'automatic'
+      && change.ref.seat === 1
+      && change.reason.includes('はうらC'))).toBe(true)
+    const after = replayRound(result.output!, 1).snapshots[0]!
+    expect(after.hands[0]!.filter((id) => sameTileKind(after.tiles[id]!.code, 11))).toHaveLength(4)
+    expectPlayable(result.output!)
+  }, 30_000)
 
   it('removes a later reach when changing the initial 3萬 to 6萬 breaks tenpai', () => {
     const decoded = decodeMatch(sample)

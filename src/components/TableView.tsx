@@ -145,46 +145,48 @@ function PlayerEdge({
         <strong>{state.scores[seat]?.toLocaleString()}<small>点</small></strong>
         {state.reach[seat] && <span className="reach-badge">立直</span>}
       </button>
-      <div className="hand-row" aria-label={`${state.names[seat]}の手牌`}>
-        {state.hands[seat]!.map((id) => {
-          const tile = state.tiles[id]!
-          const key = refKey(tile.acquisitionRef)
-          const locked = lockedRefs.has(key)
-          return (
-            <span className="tile-with-lock" key={id}>
-              <TileView
-                tile={tile}
-                selected={selection?.type === 'tile' && selection.tileId === id}
-                locked={locked}
-                changes={changes}
-                processing={processingTileIds.has(id)}
-                flash={justApplied}
-                onClick={() => onSelect({ type: 'tile', tileId: id })}
-              />
-              {selection?.type === 'tile' && selection.tileId === id && (
-                <button
-                  type="button"
-                  className="inline-lock"
-                  title={locked ? '固定を解除' : 'この牌の取得元を固定'}
-                  onClick={() => onToggleLock(key)}
-                >
-                  {locked ? <Unlock size={12} /> : <Lock size={12} />}
-                </button>
-              )}
-            </span>
-          )
-        })}
-      </div>
-      <div className="meld-row" aria-label={`${state.names[seat]}の副露`}>
-        {state.melds[seat]!.map((meld) => (
-          <MeldGroup
-            key={meld.id}
-            meld={meld}
-            state={state}
-            selected={selection?.type === 'meld' && selection.meldId === meld.id}
-            onClick={() => onSelect({ type: 'meld', seat, meldId: meld.id })}
-          />
-        ))}
+      <div className="tiles-row">
+        <div className="hand-row" aria-label={`${state.names[seat]}の手牌`}>
+          {state.hands[seat]!.map((id) => {
+            const tile = state.tiles[id]!
+            const key = refKey(tile.acquisitionRef)
+            const locked = lockedRefs.has(key)
+            return (
+              <span className="tile-with-lock" key={id}>
+                <TileView
+                  tile={tile}
+                  selected={selection?.type === 'tile' && selection.tileId === id}
+                  locked={locked}
+                  changes={changes}
+                  processing={processingTileIds.has(id)}
+                  flash={justApplied}
+                  onClick={() => onSelect({ type: 'tile', tileId: id })}
+                />
+                {selection?.type === 'tile' && selection.tileId === id && (
+                  <button
+                    type="button"
+                    className="inline-lock"
+                    title={locked ? '固定を解除' : 'この牌の取得元を固定'}
+                    onClick={() => onToggleLock(key)}
+                  >
+                    {locked ? <Unlock size={12} /> : <Lock size={12} />}
+                  </button>
+                )}
+              </span>
+            )
+          })}
+        </div>
+        <div className="meld-row" aria-label={`${state.names[seat]}の副露`}>
+          {state.melds[seat]!.map((meld) => (
+            <MeldGroup
+              key={meld.id}
+              meld={meld}
+              state={state}
+              selected={selection?.type === 'meld' && selection.meldId === meld.id}
+              onClick={() => onSelect({ type: 'meld', seat, meldId: meld.id })}
+            />
+          ))}
+        </div>
       </div>
       <div className="river-grid" aria-label={`${state.names[seat]}の河`}>
         {state.rivers[seat]!.map((river, index) => (

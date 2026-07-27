@@ -16,6 +16,7 @@ import type {
   AutoChange,
   Diagnostic,
   EditRequest,
+  Meld,
   MeldType,
   RawRef,
   RawTile,
@@ -79,30 +80,53 @@ function updatePhysicalTile(
 function candidateCost(state: RoundState, tile: TileTrace, targetSeat: Seat | undefined, winner?: Seat): number {
   const seat = tile.owner
   const reach = seat === undefined ? false : state.reach[seat]
-  let group = 90
-  if (seat !== undefined && seat !== targetSeat && !reach && tile.location === 'hand') group = 0
-  else if (seat !== undefined && seat !== targetSeat && !reach && tile.location === 'river') group = 10
-  else if (seat !== undefined && seat !== winner && reach && tile.location === 'river') group = 20
-  else if (seat !== undefined && seat !== winner && reach && tile.location === 'hand') group = 30
-  else if (tile.location === 'dora') group = 70
+  let group = 80
+  if (tile.location === 'hand') {
+    if (seat === targetSeat) group = 120
+    else if (seat === winner) group = 35
+    else if (reach) group = 30
+    else group = 0
+  } else if (tile.location === 'river') {
+    if (seat === targetSeat) group = 110
+    else if (seat === winner) group = 25
+    else if (reach) group = 20
+    else group = 10
+  } else if (tile.location === 'dora') {
+    group = 180
+  } else if (tile.location === 'meld') {
+    group = 200
+  }
   return group + tile.acquiredAt / 10000 + Number(refKey(tile.acquisitionRef).replace(/\D/g, '')) / 1e9
+}
+
+function visibleTiles(state: RoundState): TileTrace[] {
+  return Object.values(state.tiles).filter((tile) => tile.location !== 'unknown')
+}
+
+function kindCounts(state: RoundState): Map<number, number> {
+  const counts = new Map<number, number>()
+  for (const tile of visibleTiles(state)) counts.set(tile.kind, (counts.get(tile.kind) ?? 0) + 1)
+  return counts
+}
+
+function normalCodeForKind(kind: number): TileCode | undefined {
+  return ALL_TILE_CODES.find((code) => code < 50 && normalizeTile(code) === kind)
 }
 
 function selectSwapCandidate(
   state: RoundState,
-  requested: TileTrace,
-  code: TileCode,
-  locked: Set<string>,
+  kind: number,
+  protectedRefs: Set<string>,
+  avoidSeat?: Seat,
   winner?: Seat,
 ): TileTrace | undefined {
-  return Object.values(state.tiles)
+  return visibleTiles(state)
     .filter((tile) =>
-      tile.id !== requested.id
-      && sameTileKind(tile.code, code)
-      && !locked.has(refKey(tile.acquisitionRef))
-      && tile.origin !== 'dora')
+      tile.kind === kind
+      && !protectedRefs.has(refKey(tile.acquisitionRef)))
+    .filter((tile) => tile.location !== 'meld')
     .sort((a, b) =>
-      candidateCost(state, a, requested.owner, winner) - candidateCost(state, b, requested.owner, winner)
+      candidateCost(state, a, avoidSeat, winner) - candidateCost(state, b, avoidSeat, winner)
       || refKey(a.acquisitionRef).localeCompare(refKey(b.acquisitionRef)))[0]
 }
 
@@ -112,36 +136,234 @@ function resultWinner(log: TenhouLog, round: number): Seat | undefined {
   return Array.isArray(details) && Number.isInteger(details[0]) ? Number(details[0]) as Seat : undefined
 }
 
+function replacementKindOrder(
+  counts: Map<number, number>,
+  overfullKind: number,
+  preferredCodes: Iterable<TileCode> = [],
+): number[] {
+  const preferred = [...preferredCodes].map(normalizeTile)
+  const kinds = [...new Set(ALL_TILE_CODES.filter((code) => code < 50).map(normalizeTile))]
+  return kinds
+    .filter((kind) => kind !== overfullKind && (counts.get(kind) ?? 0) < 4)
+    .sort((a, b) => {
+      const preferredA = preferred.indexOf(a)
+      const preferredB = preferred.indexOf(b)
+      const rankA = a < 40 && overfullKind < 40 && a % 10 === overfullKind % 10 ? 0 : 1
+      const rankB = b < 40 && overfullKind < 40 && b % 10 === overfullKind % 10 ? 0 : 1
+      return Number(preferredA < 0) - Number(preferredB < 0)
+        || (preferredA < 0 ? 0 : preferredA) - (preferredB < 0 ? 0 : preferredB)
+        || rankA - rankB
+        || (counts.get(a) ?? 0) - (counts.get(b) ?? 0)
+        || a - b
+    })
+}
+
+function containerRef(ref: RawRef): RawRef {
+  const container: RawRef = {
+    round: ref.round,
+    section: ref.section,
+    index: ref.index,
+  }
+  if (ref.seat !== undefined) container.seat = ref.seat
+  return container
+}
+
+function uniformMeldCandidate(
+  state: RoundState,
+  kind: number,
+  protectedRefs: Set<string>,
+): Meld | undefined {
+  return state.melds
+    .flat()
+    .filter((meld) =>
+      meld.type !== 'chi'
+      && meld.codes.length >= 3
+      && meld.codes.every((code) => normalizeTile(code) === kind)
+      && meld.tileIds.every((id) => {
+        const tile = state.tiles[id]
+        return tile
+          && tile.origin !== 'dora'
+          && !protectedRefs.has(refKey(tile.acquisitionRef))
+      }))
+    .sort((a, b) =>
+      Number(b.type === 'ankan') - Number(a.type === 'ankan')
+      || b.codes.length - a.codes.length
+      || b.eventIndex - a.eventIndex)[0]
+}
+
+function meldReplacementKinds(
+  state: RoundState,
+  meld: Meld,
+  counts: Map<number, number>,
+  protectedRefs: Set<string>,
+  preferredCodes: Iterable<TileCode>,
+): number[] {
+  const sourceKind = normalizeTile(meld.codes[0]!)
+  const preferred = [...preferredCodes].map(normalizeTile)
+  const kinds = [...new Set(ALL_TILE_CODES.filter((code) => code < 50).map(normalizeTile))]
+  return kinds
+    .filter((kind) => kind !== sourceKind)
+    .filter((kind) => {
+      const excessAfterRewrite = Math.max(0, (counts.get(kind) ?? 0) + meld.codes.length - 4)
+      if (excessAfterRewrite === 0) return true
+      const movable = visibleTiles(state).filter((tile) =>
+        tile.kind === kind
+        && tile.location !== 'meld'
+        && !protectedRefs.has(refKey(tile.acquisitionRef))).length
+      return movable >= excessAfterRewrite
+    })
+    .sort((a, b) => {
+      const preferredA = preferred.indexOf(a)
+      const preferredB = preferred.indexOf(b)
+      const sameRankA = a < 40 && sourceKind < 40 && a % 10 === sourceKind % 10 ? 0 : 1
+      const sameRankB = b < 40 && sourceKind < 40 && b % 10 === sourceKind % 10 ? 0 : 1
+      return Number(preferredA < 0) - Number(preferredB < 0)
+        || (preferredA < 0 ? 0 : preferredA) - (preferredB < 0 ? 0 : preferredB)
+        || sameRankA - sameRankB
+        || (counts.get(a) ?? 0) - (counts.get(b) ?? 0)
+        || a - b
+    })
+}
+
+function rewriteUniformMeld(
+  log: TenhouLog,
+  state: RoundState,
+  meld: Meld,
+  replacement: TileCode,
+  changes: AutoChange[],
+): void {
+  const sourceKind = normalizeTile(meld.codes[0]!)
+  const sourceLabel = tileLabel(meld.codes[0]!)
+  const replacementLabel = tileLabel(replacement)
+  const meldContainers = new Map<string, RawRef>()
+  const traces = meld.tileIds.map((id) => state.tiles[id]).filter(Boolean) as TileTrace[]
+
+  for (const trace of traces) {
+    const refs = new Map<string, RawRef>()
+    for (const ref of [trace.acquisitionRef, ...trace.references]) refs.set(refKey(ref), ref)
+    for (const ref of refs.values()) {
+      const rawContainer = containerRef(ref)
+      const raw = getRoundSection(log.log[rawContainer.round]!, rawContainer.section, rawContainer.seat)[rawContainer.index]
+      if (typeof raw === 'string' && parseMeldString(raw)) {
+        meldContainers.set(refKey(rawContainer), rawContainer)
+        continue
+      }
+      setReferenceCode(
+        log,
+        ref,
+        replacement,
+        changes,
+        'automatic',
+        `${sourceLabel}の${meldLabelJa(meld.type)}を${replacementLabel}へ組単位で差し替えるため物理牌を玉突き補正`,
+      )
+    }
+  }
+  meldContainers.set(refKey(containerRef(meld.rawRef)), containerRef(meld.rawRef))
+
+  for (const ref of meldContainers.values()) {
+    const before = readRawRef(log, ref)
+    if (typeof before !== 'string') continue
+    const parsed = parseMeldString(before)
+    if (!parsed || parsed.type === 'chi') continue
+    const afterCodes = parsed.codes.map((code) =>
+      normalizeTile(code) === sourceKind ? replacement : code)
+    const after = encodeMeld(parsed.type, afterCodes, parsed.calledIndex)
+    if (before === after) continue
+    writeRawRef(log, ref, after)
+    changes.push({
+      id: `change-${changes.length + 1}`,
+      kind: 'automatic',
+      ref,
+      before,
+      after,
+      reason: `${state.names[meld.actor]}の${sourceLabel}${meldLabelJa(meld.type)}を、壊さず一組まとめて${replacementLabel}へ差し替え`,
+    })
+  }
+}
+
+function repairAllFifthTiles(
+  log: TenhouLog,
+  round: number,
+  changes: AutoChange[],
+  locked: Set<string>,
+  options: {
+    protectedRefs?: Iterable<string>
+    avoidSeat?: Seat
+    preferredCodes?: Iterable<TileCode>
+  } = {},
+): string | undefined {
+  const protectedRefs = new Set([...locked, ...(options.protectedRefs ?? [])])
+  const preferredCodes = [...(options.preferredCodes ?? [])]
+  for (let attempt = 0; attempt < 96; attempt += 1) {
+    const replayed = replayRound(log, round)
+    const final = replayed.snapshots.at(-1)!
+    const counts = kindCounts(final)
+    const overfull = [...counts.entries()]
+      .filter(([, count]) => count > 4)
+      .sort((a, b) => b[1] - a[1] || a[0] - b[0])[0]
+    if (!overfull) return undefined
+    const [overfullKind, overfullCount] = overfull
+    const overfullCode = normalCodeForKind(overfullKind)
+    if (!overfullCode) return `牌種${overfullKind}の4枚制約を補正できません`
+    const replacementKind = replacementKindOrder(counts, overfullKind, preferredCodes)[0]
+    const replacement = replacementKind === undefined ? undefined : normalCodeForKind(replacementKind)
+    const candidate = selectSwapCandidate(
+      final,
+      overfullKind,
+      protectedRefs,
+      options.avoidSeat,
+      resultWinner(log, round),
+    )
+    if (candidate && replacement) {
+      updatePhysicalTile(
+        log,
+        candidate,
+        replacement,
+        changes,
+        'automatic',
+        `${tileLabel(overfullCode)}が${overfullCount}枚あるため、${candidate.owner === undefined ? '未確定領域' : final.names[candidate.owner]}の${locationLabel(candidate.location)}にある${tileLabel(candidate.code)}を${tileLabel(replacement)}へ玉突きで差し替え`,
+      )
+      preferredCodes.unshift(candidate.code)
+      continue
+    }
+
+    const meld = uniformMeldCandidate(final, overfullKind, protectedRefs)
+    if (!meld) {
+      return `${tileLabel(overfullCode)}の交換可能な牌がなく、固定された牌や副露を壊さず4枚制約を補正できません`
+    }
+    const meldReplacementKind = meldReplacementKinds(
+      final,
+      meld,
+      counts,
+      protectedRefs,
+      preferredCodes,
+    )[0]
+    const meldReplacement = meldReplacementKind === undefined
+      ? undefined
+      : normalCodeForKind(meldReplacementKind)
+    if (!meldReplacement) {
+      return `${tileLabel(overfullCode)}の${meldLabelJa(meld.type)}を合法な別牌へ差し替えられません`
+    }
+    rewriteUniformMeld(log, final, meld, meldReplacement, changes)
+    preferredCodes.unshift(overfullCode)
+  }
+  return '五枚目の玉突き補正が収束しませんでした'
+}
+
 function repairFifthTiles(
   log: TenhouLog,
   round: number,
   requestedTrace: TileTrace,
   oldCode: TileCode,
-  requestedCode: TileCode,
+  _requestedCode: TileCode,
   changes: AutoChange[],
   locked: Set<string>,
 ): string | undefined {
-  let replayed = replayRound(log, round)
-  const final = replayed.snapshots[replayed.snapshots.length - 1]!
-  const count = Object.values(final.tiles).filter((tile) => sameTileKind(tile.code, requestedCode)).length
-  if (count <= 4) return undefined
-  const currentRequested = Object.values(final.tiles).find((tile) => refKey(tile.acquisitionRef) === refKey(requestedTrace.acquisitionRef))
-    ?? requestedTrace
-  const candidate = selectSwapCandidate(final, currentRequested, requestedCode, locked, resultWinner(log, round))
-  if (!candidate) return `${tileLabel(requestedCode)}はすでに4枚すべて固定されており、交換できる牌がありません`
-  updatePhysicalTile(
-    log,
-    candidate,
-    oldCode,
-    changes,
-    'automatic',
-    `${tileLabel(requestedCode)}が5枚になるため、${candidate.owner === undefined ? '未確定領域' : final.names[candidate.owner]}の${locationLabel(candidate.location)}にある${tileLabel(candidate.code)}と元の${tileLabel(oldCode)}を交換`,
-  )
-  replayed = replayRound(log, round)
-  if (replayed.diagnostics.some((item) => item.code === 'FIFTH_TILE' && item.severity === 'error')) {
-    return '牌交換後も4枚制約を満たせません'
-  }
-  return undefined
+  return repairAllFifthTiles(log, round, changes, locked, {
+    protectedRefs: [refKey(requestedTrace.acquisitionRef)],
+    avoidSeat: requestedTrace.owner,
+    preferredCodes: [oldCode],
+  })
 }
 
 function locationLabel(location: TileTrace['location']): string {
@@ -718,16 +940,24 @@ function repairBrokenFutureMelds(
   }
 }
 
+function findForcedMeld(
+  log: TenhouLog,
+  request: Extract<EditRequest, { type: 'meld-add' }>,
+): { state: RoundState; meld: Meld } | undefined {
+  const final = replayRound(log, request.round).snapshots.at(-1)!
+  const desired = request.forced!.codes
+  const meld = final.melds[request.actor]!.find((candidate) =>
+    candidate.type === request.meldType
+    && candidate.codes.length === desired.length
+    && candidate.codes.every((code, index) => sameTileKind(code, desired[index]!)))
+  return meld ? { state: final, meld } : undefined
+}
+
 function forcedMeldExists(
   log: TenhouLog,
   request: Extract<EditRequest, { type: 'meld-add' }>,
 ): boolean {
-  const final = replayRound(log, request.round).snapshots.at(-1)!
-  const desired = request.forced!.codes
-  return final.melds[request.actor]!.some((meld) =>
-    meld.type === request.meldType
-    && meld.codes.length === desired.length
-    && meld.codes.every((code, index) => sameTileKind(code, desired[index]!)))
+  return Boolean(findForcedMeld(log, request))
 }
 
 function applyMeldAdd(
@@ -1143,6 +1373,9 @@ export function solveEdit(
   const baselineErrors = new Set(baseline.diagnostics.filter(isHardError).map(diagnosticKey))
   const output = cloneLog(input)
   const changes: AutoChange[] = []
+  const fifthProtected = new Set<string>()
+  const fifthPreferred: TileCode[] = []
+  let fifthAvoidSeat: Seat | undefined = 'actor' in request ? request.actor : undefined
   let conflict: string | undefined
 
   try {
@@ -1155,10 +1388,13 @@ export function solveEdit(
         if (!trace) conflict = '指定された物理牌が現在の盤面にありません'
         else if (locked.has(refKey(trace.acquisitionRef))) conflict = 'この牌の取得元は固定されています'
         else {
+          fifthProtected.add(refKey(trace.acquisitionRef))
+          fifthAvoidSeat = trace.owner
           const completeTrace = Object.values(sourceRound.snapshots.at(-1)!.tiles)
             .find((candidate) => refKey(candidate.acquisitionRef) === refKey(trace.acquisitionRef))
             ?? trace
           const oldCode = trace.code
+          fifthPreferred.push(oldCode)
           updatePhysicalTile(
             output,
             completeTrace,
@@ -1194,7 +1430,21 @@ export function solveEdit(
           conflict: '後続手順を補正しても、指定した副露を維持できません',
         }
       }
+      const forced = findForcedMeld(output, request)
+      if (forced) {
+        for (const id of forced.meld.tileIds) {
+          const tile = forced.state.tiles[id]
+          if (tile) fifthProtected.add(refKey(tile.acquisitionRef))
+        }
+      }
     }
+
+    conflict = repairAllFifthTiles(output, request.round, changes, locked, {
+      protectedRefs: fifthProtected,
+      avoidSeat: fifthAvoidSeat,
+      preferredCodes: fifthPreferred,
+    })
+    if (conflict) return { ok: false, changes: [], diagnostics: [], conflict }
 
     let candidate = decodeMatch(output)
     const invalidatedReachSeats = new Set(candidate.diagnostics
@@ -1220,6 +1470,12 @@ export function solveEdit(
       && !baseline.diagnostics.some((base) => diagnosticKey(base) === diagnosticKey(diagnostic)))
     if (introducedInvalidWin) {
       convertBrokenWinToDraw(output, request.round, seed, changes)
+      conflict = repairAllFifthTiles(output, request.round, changes, locked, {
+        protectedRefs: fifthProtected,
+        avoidSeat: fifthAvoidSeat,
+        preferredCodes: fifthPreferred,
+      })
+      if (conflict) return { ok: false, changes: [], diagnostics: [], conflict }
       candidate = decodeMatch(output)
     }
     propagateScores(output, request.round, changes, locked)
