@@ -361,7 +361,10 @@ export function replayRound(log: TenhouLog, roundIndex: number): DecodedRound {
         addDiagnostic(state, 'INVALID_KAKAN', `${state.names[actor]}の加槓元となる刻子または加槓牌がありません`, 'error', actor, rawRef)
       } else {
         removeFromHand(state, actor, added)
-        state.tiles[added]!.references.push(rawRef)
+        existing.tileIds.forEach((id, token) => {
+          state.tiles[id]!.references.push({ ...rawRef, token })
+        })
+        state.tiles[added]!.references.push({ ...rawRef, token: existing.tileIds.length })
         existing.type = 'kakan'
         existing.raw = rawString
         existing.rawRef = rawRef

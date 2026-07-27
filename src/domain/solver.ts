@@ -79,6 +79,180 @@ function updatePhysicalTile(
   }
 }
 
+interface MeldTileEditResult {
+  handled: boolean
+  conflict?: string
+  protectedRefs: string[]
+}
+
+function closestSequenceForEdit(
+  meld: Meld,
+  editedTileId: string,
+  requestedCode: TileCode,
+): { codes: TileCode[]; calledIndex: number; tileIds: string[] } | undefined {
+  const requestedKind = normalizeTile(requestedCode)
+  const suit = Math.floor(requestedKind / 10)
+  const rank = requestedKind % 10
+  if (suit > 3) return undefined
+
+  const calledTileId = meld.tileIds[meld.calledIndex ?? 0]
+  const calledOldKind = normalizeTile(meld.codes[meld.calledIndex ?? 0]!)
+  const candidates: {
+    codes: TileCode[]
+    calledIndex: number
+    tileIds: string[]
+    cost: number
+  }[] = []
+
+  for (let start = Math.max(1, rank - 2); start <= Math.min(7, rank); start += 1) {
+    const codes = [start, start + 1, start + 2]
+      .map((value) => (suit * 10 + value) as TileCode)
+    const editedIndex = rank - start
+    const calledOptions = editedTileId === calledTileId
+      ? [editedIndex]
+      : codes
+        .map((code, index) => ({ code, index }))
+        .filter(({ code, index }) => index !== editedIndex && normalizeTile(code) === calledOldKind)
+        .map(({ index }) => index)
+    for (const calledIndex of calledOptions) {
+      const remainingIds = meld.tileIds.filter((id) => id !== editedTileId && id !== calledTileId)
+      const tileIds = Array<string>(3)
+      tileIds[editedIndex] = editedTileId
+      tileIds[calledIndex] = calledTileId!
+      let remainingIndex = 0
+      for (let index = 0; index < tileIds.length; index += 1) {
+        if (!tileIds[index]) tileIds[index] = remainingIds[remainingIndex++]!
+      }
+      const oldStart = Math.min(...meld.codes.map(normalizeTile).map((code) => code % 10))
+      const changedKinds = tileIds.reduce((total, id, index) => {
+        const oldIndex = meld.tileIds.indexOf(id)
+        return total + Number(normalizeTile(meld.codes[oldIndex]!) !== normalizeTile(codes[index]!))
+      }, 0)
+      candidates.push({
+        codes,
+        calledIndex,
+        tileIds,
+        cost: changedKinds * 100 + Math.abs(start - oldStart),
+      })
+    }
+  }
+
+  return candidates.sort((a, b) => a.cost - b.cost || a.calledIndex - b.calledIndex)[0]
+}
+
+function applyMeldAwareTileEdit(
+  log: TenhouLog,
+  state: RoundState,
+  selectedTrace: TileTrace,
+  completeTrace: TileTrace,
+  requestedCode: TileCode,
+  changes: AutoChange[],
+  locked: Set<string>,
+): MeldTileEditResult {
+  const meld = state.melds
+    .flat()
+    .find((candidate) => candidate.tileIds.includes(completeTrace.id))
+  if (!meld) return { handled: false, protectedRefs: [] }
+
+  const editedIndex = meld.tileIds.indexOf(completeTrace.id)
+  const calledTileId = meld.tileIds[meld.calledIndex ?? 0]
+  let type = meld.type
+  let calledIndex = meld.calledIndex ?? 0
+  let tileIds = [...meld.tileIds]
+  let codes: TileCode[]
+
+  if (meld.type === 'chi') {
+    const sequence = closestSequenceForEdit(meld, completeTrace.id, requestedCode)
+    if (sequence) {
+      tileIds = sequence.tileIds
+      calledIndex = sequence.calledIndex
+      codes = sequence.codes
+      codes[tileIds.indexOf(completeTrace.id)] = requestedCode
+    } else {
+      type = 'pon'
+      const target = meld.target
+      if (target === undefined) {
+        return {
+          handled: true,
+          conflict: 'チーの副露元を特定できないため、合法な形へ補正できません',
+          protectedRefs: [],
+        }
+      }
+      calledIndex = meldCalledIndex('pon', meld.actor, target)
+      const otherIds = meld.tileIds.filter((id) => id !== calledTileId)
+      tileIds = Array<string>(3)
+      tileIds[calledIndex] = calledTileId!
+      let otherIndex = 0
+      for (let index = 0; index < tileIds.length; index += 1) {
+        if (!tileIds[index]) tileIds[index] = otherIds[otherIndex++]!
+      }
+      const normal = normalCodeForKind(normalizeTile(requestedCode))!
+      codes = Array<TileCode>(3).fill(normal)
+      codes[tileIds.indexOf(completeTrace.id)] = requestedCode
+    }
+  } else {
+    const normal = normalCodeForKind(normalizeTile(requestedCode))!
+    codes = Array<TileCode>(meld.tileIds.length).fill(normal)
+    codes[editedIndex] = requestedCode
+  }
+
+  const protectedRefs = tileIds.map((id) => refKey(state.tiles[id]!.acquisitionRef))
+  for (let index = 0; index < tileIds.length; index += 1) {
+    const trace = state.tiles[tileIds[index]!]!
+    const code = codes[index]!
+    if (
+      locked.has(refKey(trace.acquisitionRef))
+      && trace.code !== code
+    ) {
+      return {
+        handled: true,
+        conflict: `${tileLabel(trace.code)}の取得元が固定されているため、副露全体を${tileLabel(requestedCode)}に合わせられません`,
+        protectedRefs,
+      }
+    }
+  }
+
+  const ordered = [
+    completeTrace.id,
+    ...tileIds.filter((id) => id !== completeTrace.id),
+  ]
+  for (const id of ordered) {
+    const index = tileIds.indexOf(id)
+    const trace = state.tiles[id]!
+    const code = codes[index]!
+    const isSelected = id === completeTrace.id
+    updatePhysicalTile(
+      log,
+      trace,
+      code,
+      changes,
+      isSelected ? 'manual' : 'automatic',
+      isSelected
+        ? `${locationLabel(selectedTrace.location)}の${tileLabel(selectedTrace.code)}を${tileLabel(requestedCode)}へ変更し、鳴きに使われた副露全体を合法な形へ再構成`
+        : `${tileLabel(requestedCode)}への変更に合わせて${meldLabelJa(type)}全体を一組として補正`,
+    )
+  }
+
+  const rawRef = containerRef(meld.rawRef)
+  const before = readRawRef(log, rawRef)
+  const after = encodeMeld(type, codes, calledIndex)
+  if (before !== after) {
+    writeRawRef(log, rawRef, after)
+    changes.push({
+      id: `change-${changes.length + 1}`,
+      kind: 'automatic',
+      ref: rawRef,
+      before,
+      after,
+      reason: meld.type === 'chi' && type === 'pon'
+        ? `${tileLabel(requestedCode)}では順子を作れないため、同じ副露元からのポンへ変更`
+        : `鳴きに使われた牌の変更に合わせて${meldLabelJa(type)}の並びと取得元を再構成`,
+    })
+  }
+
+  return { handled: true, protectedRefs }
+}
+
 function candidateCost(state: RoundState, tile: TileTrace, targetSeat: Seat | undefined, winner?: Seat): number {
   const seat = tile.owner
   const reach = seat === undefined ? false : state.reach[seat]
@@ -1617,15 +1791,28 @@ export function solveEdit(
             ?? trace
           const oldCode = trace.code
           fifthPreferred.push(oldCode)
-          updatePhysicalTile(
+          const meldEdit = applyMeldAwareTileEdit(
             output,
+            sourceRound.snapshots.at(-1)!,
+            trace,
             completeTrace,
             request.code,
             changes,
-            'manual',
-            `${locationLabel(trace.location)}の${tileLabel(oldCode)}を${tileLabel(request.code)}へ変更。表示だけでなく${trace.origin === 'deal' ? '配牌' : trace.origin === 'draw' ? '取得ツモ' : '表示牌'}まで遡及`,
+            locked,
           )
-          conflict = repairFifthTiles(output, request.round, completeTrace, oldCode, request.code, changes, locked)
+          meldEdit.protectedRefs.forEach((key) => fifthProtected.add(key))
+          conflict = meldEdit.conflict
+          if (!meldEdit.handled) {
+            updatePhysicalTile(
+              output,
+              completeTrace,
+              request.code,
+              changes,
+              'manual',
+              `${locationLabel(trace.location)}の${tileLabel(oldCode)}を${tileLabel(request.code)}へ変更。表示だけでなく${trace.origin === 'deal' ? '配牌' : trace.origin === 'draw' ? '取得ツモ' : '表示牌'}まで遡及`,
+            )
+            conflict = repairFifthTiles(output, request.round, completeTrace, oldCode, request.code, changes, locked)
+          }
         }
       }
     } else if (request.type === 'meld-add') {

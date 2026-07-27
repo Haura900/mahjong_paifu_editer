@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { cloneLog, getRoundSection, refKey, writeRawRef } from '../codec'
+import { cloneLog, getRoundSection, parseMeldString, refKey, writeRawRef } from '../codec'
 import { winningTiles } from '../hand'
 import {
   applyProjectEdit,
@@ -474,6 +474,88 @@ describe('deterministic automatic correction solver', () => {
     expect(result.changes.some((change) => refKey(change.ref) === refKey(trace.acquisitionRef))).toBe(true)
     expectPlayable(result.output!)
   })
+
+  it('rebuilds the whole pon when its called river tile is edited', () => {
+    const sourceRound = decodeMatch(sample).rounds[2]!
+    const ponEvent = sourceRound.events.find((event) =>
+      event.meld?.type === 'pon'
+      && event.meld.codes.every((code) => sameTileKind(code, 17)))!
+    const pon = ponEvent.meld!
+    const calledTileId = pon.tileIds[pon.calledIndex ?? 0]!
+    const result = solveEdit(sample, {
+      type: 'tile',
+      round: 2,
+      event: ponEvent.index,
+      tileId: calledTileId,
+      code: 44,
+    })
+
+    expect(result.ok, result.conflict).toBe(true)
+    const final = replayRound(result.output!, 2).snapshots.at(-1)!
+    const rebuilt = final.melds[pon.actor]!.find((meld) =>
+      refKey(meld.rawRef) === refKey(pon.rawRef))!
+    expect(rebuilt.type).toBe('pon')
+    expect(rebuilt.codes).toHaveLength(3)
+    expect(rebuilt.codes.every((code) => sameTileKind(code, 44))).toBe(true)
+    expect(result.changes.some((change) => change.reason.includes('副露全体'))).toBe(true)
+    expectPlayable(result.output!)
+  }, 20_000)
+
+  it('keeps both the source pon and later kakan uniform after editing the called tile', () => {
+    const round = 8
+    const sourceRound = decodeMatch(sample).rounds[round]!
+    const final = sourceRound.snapshots.at(-1)!
+    const kakan = final.melds.flat().find((meld) => meld.type === 'kakan')!
+    const calledTileId = kakan.tileIds[kakan.calledIndex ?? 0]!
+    const requested: TileCode = 11
+    const result = solveEdit(sample, {
+      type: 'tile',
+      round,
+      event: final.eventIndex,
+      tileId: calledTileId,
+      code: requested,
+    })
+
+    expect(result.ok, result.conflict).toBe(true)
+    const sourcePon = getRoundSection(
+      result.output!.log[round]!,
+      'draw',
+      kakan.actor,
+    ).find((item) =>
+      typeof item === 'string'
+      && parseMeldString(item)?.type === 'pon'
+      && parseMeldString(item)?.codes.every((code) => sameTileKind(code, requested)))
+    expect(sourcePon).toBeDefined()
+    const rebuilt = replayRound(result.output!, round).snapshots.at(-1)!
+      .melds[kakan.actor]!.find((meld) => meld.type === 'kakan')!
+    expect(rebuilt.codes).toHaveLength(4)
+    expect(rebuilt.codes.every((code) => sameTileKind(code, requested))).toBe(true)
+    expectPlayable(result.output!)
+  }, 20_000)
+
+  it('turns a chi into a pon when its called river tile becomes an honor', () => {
+    const decoded = decodeMatch(sample)
+    const round = decoded.rounds.findIndex((item) =>
+      item.events.some((event) => event.meld?.type === 'chi'))
+    const sourceRound = decoded.rounds[round]!
+    const chiEvent = sourceRound.events.find((event) => event.meld?.type === 'chi')!
+    const chi = chiEvent.meld!
+    const requested: TileCode = 44
+    const result = solveEdit(sample, {
+      type: 'tile',
+      round,
+      event: chiEvent.index,
+      tileId: chi.tileIds[chi.calledIndex ?? 0]!,
+      code: requested,
+    })
+
+    expect(result.ok, result.conflict).toBe(true)
+    const rebuilt = replayRound(result.output!, round).snapshots.at(-1)!
+      .melds[chi.actor]!.find((meld) => refKey(meld.rawRef) === refKey(chi.rawRef))!
+    expect(rebuilt.type).toBe('pon')
+    expect(rebuilt.codes.every((code) => sameTileKind(code, requested))).toBe(true)
+    expectPlayable(result.output!)
+  }, 20_000)
 
   it('recreates a kakan with rinshan flow and a matching kan-dora indicator', () => {
     const decoded = decodeMatch(sample)
