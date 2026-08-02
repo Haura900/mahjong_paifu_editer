@@ -187,11 +187,13 @@ export interface EditTransaction {
   id: string
   at: string
   label: string
-  request: EditRequest
+  request: ProjectEditRequest
   before: TenhouLog
   after: TenhouLog
   changes: AutoChange[]
   seed: number
+  beforeLockedRefs?: string[]
+  afterLockedRefs?: string[]
 }
 
 export interface ForcedMeldPlan {
@@ -207,6 +209,12 @@ export type EditRequest =
   | { type: 'meld-change'; round: number; event: number; actor: Seat; meldId: string; meldType: MeldType }
   | { type: 'reach'; round: number; event: number; actor: Seat; enabled: boolean }
   | { type: 'score'; round: number; seat: Seat; score: number }
+
+export type RoundEditRequest =
+  | { type: 'round-insert'; index: number }
+  | { type: 'round-delete'; index: number }
+
+export type ProjectEditRequest = EditRequest | RoundEditRequest
 
 export interface SolverResult {
   ok: boolean

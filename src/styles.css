@@ -271,9 +271,47 @@ textarea:focus-visible {
   font-size: 18px;
 }
 
+.round-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 13px;
+  gap: 4px;
+}
+
+.round-actions button {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 3px;
+  gap: 3px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: #fff;
+  color: var(--ink);
+  font-size: 9px;
+  cursor: pointer;
+}
+
+.round-actions button:hover:not(:disabled) {
+  border-color: #9eb9af;
+  background: #edf4f0;
+}
+
+.round-actions button.danger-action:hover:not(:disabled) {
+  border-color: #d8aaa3;
+  background: #fff0ee;
+  color: var(--red);
+}
+
+.round-actions button:disabled {
+  opacity: .38;
+  cursor: not-allowed;
+}
+
 .round-list {
   display: grid;
-  max-height: calc(100vh - 158px);
+  max-height: calc(100vh - 202px);
   padding: 0 8px 16px;
   gap: 3px;
   overflow-y: auto;
@@ -370,6 +408,36 @@ textarea:focus-visible {
   align-items: center;
   gap: 5px;
   cursor: pointer;
+}
+
+.view-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px !important;
+}
+
+.viewpoint-control {
+  padding: 3px 4px 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+  color: #456158;
+  font-weight: 700;
+}
+
+.viewpoint-control select {
+  max-width: 150px;
+  padding: 3px 24px 3px 6px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  cursor: pointer;
+}
+
+.viewpoint-control select:focus-visible {
+  outline: 2px solid #86ad9f;
+  outline-offset: 2px;
 }
 
 .table-shell {
@@ -2127,6 +2195,10 @@ textarea:focus-visible {
     max-height: none;
     padding: 0 10px 10px;
     overflow-x: auto;
+  }
+
+  .round-actions {
+    max-width: 240px;
   }
 
   .round-list > button {

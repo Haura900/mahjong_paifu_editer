@@ -64,6 +64,26 @@ describe('browser-facing editor workflow', () => {
     expect(screen.getByRole('button', { name: /クリップボードへコピー/ })).toBeInTheDocument()
   })
 
+  it('selects an analysis viewpoint and repeats or deletes the current round', async () => {
+    render(<App />)
+    expect(await screen.findByText(/全 11 局/)).toBeInTheDocument()
+
+    const viewpoint = screen.getByRole('combobox', { name: '分析視点' })
+    fireEvent.change(viewpoint, { target: { value: '1' } })
+    expect(viewpoint).toHaveValue('1')
+    expect(screen.getByRole('option', { name: 'はうらC' })).toBeInTheDocument()
+
+    const paste = screen.getByRole('button', { name: '貼付' })
+    expect(paste).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'コピー' }))
+    expect(paste).toBeEnabled()
+    fireEvent.click(paste)
+    expect(await screen.findByText(/全 12 局/)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '削除' }))
+    expect(await screen.findByText(/全 11 局/)).toBeInTheDocument()
+  })
+
   it('asks before creating a meld that the current discard cannot support', async () => {
     render(<App />)
     expect(await screen.findByText(/全 11 局/)).toBeInTheDocument()

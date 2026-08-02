@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronRight, Pause, Play } from 'lucide-react'
+import { ChevronLeft, ChevronRight, ClipboardPaste, Copy, Pause, Play, Trash2 } from 'lucide-react'
 import { roundLabel } from '../domain/replay'
 import type { DecodedMatch } from '../domain/types'
 
@@ -10,9 +10,27 @@ interface TimelineProps {
   onRound: (round: number) => void
   onEvent: (event: number) => void
   onPlaying: (playing: boolean) => void
+  canPasteRound: boolean
+  canDeleteRound: boolean
+  onCopyRound: () => void
+  onPasteRound: () => void
+  onDeleteRound: () => void
 }
 
-export function Timeline({ match, round, event, playing, onRound, onEvent, onPlaying }: TimelineProps) {
+export function Timeline({
+  match,
+  round,
+  event,
+  playing,
+  onRound,
+  onEvent,
+  onPlaying,
+  canPasteRound,
+  canDeleteRound,
+  onCopyRound,
+  onPasteRound,
+  onDeleteRound,
+}: TimelineProps) {
   const decodedRound = match.rounds[round]!
   const currentEvent = decodedRound.events[event]
   return (
@@ -21,6 +39,17 @@ export function Timeline({ match, round, event, playing, onRound, onEvent, onPla
         <div className="panel-heading">
           <span className="eyebrow">ROUND INDEX</span>
           <h2>全 {match.rounds.length} 局</h2>
+          <div className="round-actions" aria-label="局の編集">
+            <button type="button" onClick={onCopyRound} title="選択中の局をコピー">
+              <Copy size={14} /> コピー
+            </button>
+            <button type="button" onClick={onPasteRound} disabled={!canPasteRound} title="コピーした局を直後へ貼り付け">
+              <ClipboardPaste size={14} /> 貼付
+            </button>
+            <button type="button" className="danger-action" onClick={onDeleteRound} disabled={!canDeleteRound} title="選択中の局を削除">
+              <Trash2 size={14} /> 削除
+            </button>
+          </div>
         </div>
         <div className="round-list">
           {match.rounds.map((item, index) => {

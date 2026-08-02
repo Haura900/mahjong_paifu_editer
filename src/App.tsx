@@ -22,7 +22,9 @@ import { CodecError, encodeTenhouLog, parseTenhouLog } from './domain/codec'
 import {
   applySolvedProjectEdit,
   createProject,
+  deleteProjectRound,
   editRequestLabel,
+  insertProjectRound,
   parseProject,
   redoProject,
   resetProject,
@@ -36,6 +38,7 @@ import type {
   EditorProject,
   EditQueueEntry,
   EditRequest,
+  RawRound,
   Seat,
   SolverResult,
   TenhouLog,
@@ -56,7 +59,7 @@ export function App() {
   const [selectedSeat, setSelectedSeat] = useState<Seat>(0)
   const [selection, setSelection] = useState<Selection>()
   const [playing, setPlaying] = useState(false)
-  const [autoRotate, setAutoRotate] = useState(true)
+  const [autoRotate, setAutoRotate] = useState(false)
   const [editQueue, setEditQueue] = useState<EditQueueEntry[]>([])
   const [activeJobId, setActiveJobId] = useState<string>()
   const [changeLogOpen, setChangeLogOpen] = useState(false)
@@ -65,6 +68,7 @@ export function App() {
   const [justApplied, setJustApplied] = useState(false)
   const [pasteOpen, setPasteOpen] = useState(false)
   const [pasteValue, setPasteValue] = useState('')
+  const [roundClipboard, setRoundClipboard] = useState<RawRound>()
   const [dragging, setDragging] = useState(false)
   const [notice, setNotice] = useState<string>()
   const [error, setError] = useState<string>()
@@ -326,6 +330,47 @@ export function App() {
     if (autoRotate && dealer !== undefined) setViewpoint(dealer)
   }
 
+  const copyCurrentRound = () => {
+    if (!project) return
+    const source = project.current.log[round]
+    if (!source) return
+    setRoundClipboard(structuredClone(source))
+    setNotice(`${round + 1}番目の局をコピーしました`)
+  }
+
+  const pasteRoundAfterCurrent = () => {
+    if (!project || !roundClipboard) return
+    try {
+      clearEditPipeline()
+      const insertAt = round + 1
+      setCurrentProject(insertProjectRound(project, roundClipboard, insertAt))
+      setRound(insertAt)
+      setEvent(0)
+      setSelection(undefined)
+      setPlaying(false)
+      setNotice(`コピーした局を${insertAt + 1}番目へ貼り付けました`)
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught))
+    }
+  }
+
+  const deleteCurrentRound = () => {
+    if (!project) return
+    try {
+      clearEditPipeline()
+      const next = deleteProjectRound(project, round)
+      const nextRound = Math.min(round, next.current.log.length - 1)
+      setCurrentProject(next)
+      setRound(nextRound)
+      setEvent(0)
+      setSelection(undefined)
+      setPlaying(false)
+      setNotice(`${round + 1}番目の局を削除しました`)
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught))
+    }
+  }
+
   const exportJsonFile = async () => {
     if (!project) return
     try {
@@ -448,19 +493,44 @@ export function App() {
           onRound={handleRound}
           onEvent={setEvent}
           onPlaying={setPlaying}
+          canPasteRound={Boolean(roundClipboard)}
+          canDeleteRound={project.current.log.length > 1}
+          onCopyRound={copyCurrentRound}
+          onPasteRound={pasteRoundAfterCurrent}
+          onDeleteRound={deleteCurrentRound}
         />
         <section className="table-stage">
           <div className="stage-toolbar">
-            <div>
+            <div className="match-meta">
               <span className="format-chip">天鳳 /6 JSON</span>
               <strong>{decoded.raw.rule.disp as string}</strong>
               <span>·</span>
               <span>{decoded.raw.name.join(' / ')}</span>
             </div>
-            <label>
-              <input type="checkbox" checked={autoRotate} onChange={(change) => setAutoRotate(change.target.checked)} />
-              <span>手番へ自動回転</span>
-            </label>
+            <div className="view-controls">
+              <label className="viewpoint-control">
+                <span>分析視点</span>
+                <select
+                  aria-label="分析視点"
+                  value={viewpoint}
+                  onChange={(change) => {
+                    const seat = Number(change.target.value) as Seat
+                    setAutoRotate(false)
+                    setViewpoint(seat)
+                    setSelectedSeat(seat)
+                    setSelection(undefined)
+                  }}
+                >
+                  {decoded.raw.name.map((name, seat) => (
+                    <option key={seat} value={seat}>{name || `${seat + 1}家`}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="auto-rotate-control">
+                <input type="checkbox" checked={autoRotate} onChange={(change) => setAutoRotate(change.target.checked)} />
+                <span>手番へ自動回転</span>
+              </label>
+            </div>
           </div>
           <TableView
             state={state}
