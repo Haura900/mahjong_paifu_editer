@@ -25,6 +25,7 @@ import {
   deleteProjectRound,
   editRequestLabel,
   insertProjectRound,
+  keepOnlyProjectRound,
   parseProject,
   redoProject,
   resetProject,
@@ -371,6 +372,21 @@ export function App() {
     }
   }
 
+  const keepOnlyCurrentRound = () => {
+    if (!project) return
+    try {
+      clearEditPipeline()
+      setCurrentProject(keepOnlyProjectRound(project, round))
+      setRound(0)
+      setEvent(0)
+      setSelection(undefined)
+      setPlaying(false)
+      setNotice(`${round + 1}番目の局だけを残しました`)
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught))
+    }
+  }
+
   const exportJsonFile = async () => {
     if (!project) return
     try {
@@ -498,6 +514,7 @@ export function App() {
           onCopyRound={copyCurrentRound}
           onPasteRound={pasteRoundAfterCurrent}
           onDeleteRound={deleteCurrentRound}
+          onKeepOnlyRound={keepOnlyCurrentRound}
         />
         <section className="table-stage">
           <div className="stage-toolbar">

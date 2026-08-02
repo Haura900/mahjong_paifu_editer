@@ -193,6 +193,39 @@ export function deleteProjectRound(project: EditorProject, index: number): Edito
   )
 }
 
+function keepOnlyRoundLockedRefs(lockedRefs: string[], keptRound: number): string[] {
+  const kept: string[] = []
+  for (const key of lockedRefs) {
+    const score = key.match(/^score:(\d+):(\d+)$/)
+    if (score) {
+      if (Number(score[1]) === keptRound) kept.push(`score:0:${score[2]}`)
+      continue
+    }
+    const rawRef = key.match(/^(\d+):(deal|draw|discard|dora|ura):(.*)$/)
+    if (rawRef) {
+      if (Number(rawRef[1]) === keptRound) kept.push(`0:${rawRef[2]}:${rawRef[3]}`)
+      continue
+    }
+    kept.push(key)
+  }
+  return [...new Set(kept)].sort()
+}
+
+export function keepOnlyProjectRound(project: EditorProject, index: number): EditorProject {
+  if (index < 0 || index >= project.current.log.length) throw new Error('残す局が見つかりません')
+  if (project.current.log.length === 1) return project
+  const current = structuredClone(project.current)
+  current.log = [structuredClone(current.log[index]!)]
+  parseTenhouLog(current)
+  return applyRoundEdit(
+    project,
+    current,
+    { type: 'round-keep-only', index },
+    `${index + 1}番目の局だけ残す`,
+    keepOnlyRoundLockedRefs(project.lockedRefs, index),
+  )
+}
+
 export function resetProject(project: EditorProject): EditorProject {
   return {
     ...project,
@@ -246,5 +279,6 @@ export function editRequestLabel(request: ProjectEditRequest): string {
   if (request.type === 'reach') return request.enabled ? 'リーチを設定' : 'リーチを解除'
   if (request.type === 'round-insert') return '局を貼り付け'
   if (request.type === 'round-delete') return '局を削除'
+  if (request.type === 'round-keep-only') return '選択した局だけ残す'
   return '開始点を変更・固定'
 }

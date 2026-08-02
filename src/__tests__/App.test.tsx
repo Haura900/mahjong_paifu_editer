@@ -82,7 +82,12 @@ describe('browser-facing editor workflow', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '削除' }))
     expect(await screen.findByText(/全 11 局/)).toBeInTheDocument()
-  })
+
+    fireEvent.click(screen.getByRole('button', { name: 'この局だけ' }))
+    expect(await screen.findByText(/全 1 局/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'この局だけ' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '削除' })).toBeDisabled()
+  }, 20_000)
 
   it('asks before creating a meld that the current discard cannot support', async () => {
     render(<App />)

@@ -5,6 +5,7 @@ import {
   createProject,
   deleteProjectRound,
   insertProjectRound,
+  keepOnlyProjectRound,
   redoProject,
   undoProject,
 } from '../project'
@@ -42,5 +43,17 @@ describe('round copy, paste and delete', () => {
     const oneRound = structuredClone(sample)
     oneRound.log = [structuredClone(sample.log[0]!)]
     expect(() => deleteProjectRound(createProject(oneRound), 0)).toThrow('最後の1局')
+  })
+
+  it('keeps only the selected round and restores the full match with undo', () => {
+    const original = createProject(sample)
+    original.lockedRefs = ['0:deal:0:0:-', '4:deal:1:2:-', 'score:4:2']
+    const selected = structuredClone(original.current.log[4]!)
+    const kept = keepOnlyProjectRound(original, 4)
+
+    expect(kept.current.log).toEqual([selected])
+    expect(kept.lockedRefs).toEqual(['0:deal:1:2:-', 'score:0:2'])
+    expect(undoProject(kept).current).toEqual(original.current)
+    expect(undoProject(kept).lockedRefs).toEqual(original.lockedRefs)
   })
 })

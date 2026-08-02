@@ -213,6 +213,7 @@ export type EditRequest =
 export type RoundEditRequest =
   | { type: 'round-insert'; index: number }
   | { type: 'round-delete'; index: number }
+  | { type: 'round-keep-only'; index: number }
 
 export type ProjectEditRequest = EditRequest | RoundEditRequest
 

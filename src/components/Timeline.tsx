@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronRight, ClipboardPaste, Copy, Pause, Play, Trash2 } from 'lucide-react'
+import { ChevronLeft, ChevronRight, ClipboardPaste, Copy, ListX, Pause, Play, Trash2 } from 'lucide-react'
 import { roundLabel } from '../domain/replay'
 import type { DecodedMatch } from '../domain/types'
 
@@ -15,6 +15,7 @@ interface TimelineProps {
   onCopyRound: () => void
   onPasteRound: () => void
   onDeleteRound: () => void
+  onKeepOnlyRound: () => void
 }
 
 export function Timeline({
@@ -30,6 +31,7 @@ export function Timeline({
   onCopyRound,
   onPasteRound,
   onDeleteRound,
+  onKeepOnlyRound,
 }: TimelineProps) {
   const decodedRound = match.rounds[round]!
   const currentEvent = decodedRound.events[event]
@@ -45,6 +47,9 @@ export function Timeline({
             </button>
             <button type="button" onClick={onPasteRound} disabled={!canPasteRound} title="コピーした局を直後へ貼り付け">
               <ClipboardPaste size={14} /> 貼付
+            </button>
+            <button type="button" className="danger-action" onClick={onKeepOnlyRound} disabled={!canDeleteRound} title="選択中の局以外をすべて削除">
+              <ListX size={14} /> この局だけ
             </button>
             <button type="button" className="danger-action" onClick={onDeleteRound} disabled={!canDeleteRound} title="選択中の局を削除">
               <Trash2 size={14} /> 削除
