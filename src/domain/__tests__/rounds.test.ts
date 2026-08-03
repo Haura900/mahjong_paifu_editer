@@ -6,9 +6,7 @@ import {
   insertRound,
   keepOnlyRound,
   lockedRefsForSingleRound,
-  parseClipboardRound,
   shiftLockedRefsForInsert,
-  singleRoundLog,
 } from '../rounds'
 import type { TenhouLog } from '../types'
 
@@ -25,13 +23,13 @@ describe('round structure operations', () => {
     expect(() => decodeMatch(output)).not.toThrow()
   })
 
-  it('copies one compatible round and pastes it after the selected round', () => {
-    const copiedText = JSON.stringify(singleRoundLog(sample, 0))
-    const copied = parseClipboardRound(copiedText, sample)
-    const output = insertRound(sample, 1, copied.round)
+  it('copies one round and repeats it after the selected round', () => {
+    const copied = structuredClone(sample.log[1]!)
+    const output = insertRound(sample, 2, copied)
     expect(output.log).toHaveLength(sample.log.length + 1)
-    expect(output.log[1]).toEqual(sample.log[0])
-    expect(output.log[0]).toEqual(sample.log[0])
+    expect(output.log[1]).toEqual(sample.log[1])
+    expect(output.log[2]).toEqual(sample.log[1])
+    expect(output.log[2]).not.toBe(copied)
   })
 
   it('remaps locks when rounds are inserted or all other rounds are removed', () => {
@@ -45,11 +43,5 @@ describe('round structure operations', () => {
       '0:draw:1:2:-',
       'score:0:2',
     ])
-  })
-
-  it('rejects a copied round whose player order differs', () => {
-    const foreign = singleRoundLog(sample, 0)
-    foreign.name = [...foreign.name].reverse()
-    expect(() => parseClipboardRound(JSON.stringify(foreign), sample)).toThrow(/プレイヤーの並び/)
   })
 })

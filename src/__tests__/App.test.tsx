@@ -72,13 +72,32 @@ describe('browser-facing editor workflow', () => {
     expect(container.querySelector('.player-bottom .player-name')).toHaveTextContent('はうらC')
     expect(screen.getByRole('checkbox', { name: '下に固定' })).toBeChecked()
 
-    fireEvent.click(screen.getByRole('button', { name: 'この局をコピー' }))
+    fireEvent.click(screen.getByRole('button', { name: /互換JSONをコピー/ }))
     const dialog = await screen.findByRole('dialog', { name: /JSONをコピー/ })
     expect(dialog).toHaveTextContent('分析視点: はうらC（東1局では南家）')
     expect(dialog).toHaveTextContent('東1局がこのJSONから削除されていても')
     const copied = JSON.parse((screen.getByRole('textbox', { name: '編集済み牌譜JSON' }) as HTMLTextAreaElement).value)
-    expect(copied.log).toHaveLength(1)
+    expect(copied.log).toHaveLength(11)
     expect(copied.name[1]).toBe('はうらC')
+  })
+
+  it('copies the selected round and repeats the same round on paste', async () => {
+    const { container } = render(<App />)
+    expect(await screen.findByText(/全 11 局/)).toBeInTheDocument()
+    const paste = screen.getByRole('button', { name: 'この局の後へペースト' })
+    expect(paste).toBeDisabled()
+
+    const eastTwoRounds = [...container.querySelectorAll('.round-list strong')]
+      .filter((element) => element.textContent === '東2局')
+    fireEvent.click(eastTwoRounds[0]!.closest('button')!)
+    fireEvent.click(screen.getByRole('button', { name: 'この局をコピー' }))
+    expect(paste).toBeEnabled()
+    fireEvent.click(paste)
+
+    expect(await screen.findByText(/全 12 局/)).toBeInTheDocument()
+    const repeatedEastTwoRounds = [...container.querySelectorAll('.round-list strong')]
+      .filter((element) => element.textContent === '東2局')
+    expect(repeatedEastTwoRounds).toHaveLength(eastTwoRounds.length + 1)
   })
 
   it('keeps only the selected round and restores deleted rounds with undo', async () => {

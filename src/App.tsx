@@ -36,15 +36,14 @@ import {
   insertRound,
   keepOnlyRound,
   lockedRefsForSingleRound,
-  parseClipboardRound,
   shiftLockedRefsForInsert,
-  singleRoundLog,
 } from './domain/rounds'
 import { solveEdit } from './domain/solver'
 import type {
   EditorProject,
   EditQueueEntry,
   EditRequest,
+  RawRound,
   Seat,
   SolverResult,
   TenhouLog,
@@ -76,8 +75,7 @@ export function App() {
   const [justApplied, setJustApplied] = useState(false)
   const [pasteOpen, setPasteOpen] = useState(false)
   const [pasteValue, setPasteValue] = useState('')
-  const [roundPasteOpen, setRoundPasteOpen] = useState(false)
-  const [roundPasteValue, setRoundPasteValue] = useState('')
+  const [roundClipboard, setRoundClipboard] = useState<RawRound>()
   const [dragging, setDragging] = useState(false)
   const [notice, setNotice] = useState<string>()
   const [error, setError] = useState<string>()
@@ -112,6 +110,7 @@ export function App() {
     setViewpoint(decoded.rounds[0]?.snapshots[0]?.dealer ?? 0)
     setAnalysisSeat(undefined)
     setViewpointLocked(false)
+    setRoundClipboard(undefined)
     setSelectedSeat(decoded.rounds[0]?.snapshots[0]?.dealer ?? 0)
     setSelection(undefined)
     setError(undefined)
@@ -129,6 +128,7 @@ export function App() {
         setEvent(0)
         setAnalysisSeat(undefined)
         setViewpointLocked(false)
+        setRoundClipboard(undefined)
         setSelection(undefined)
         setError(undefined)
         setNotice(`${label}から編集履歴を復元しました`)
@@ -380,41 +380,27 @@ export function App() {
   const copySelectedRound = () => {
     if (!project || !decodedRound) return
     const label = roundLabel(decodedRound.raw[0][0])
-    setJsonExport({
-      text: encodeTenhouLog(singleRoundLog(project.current, round), true),
-      title: `${label}のJSONをコピー`,
-      filename: `${label}-paifu.json`,
-    })
-  }
-
-  const openRoundPaste = () => {
-    setRoundPasteOpen(true)
-    setRoundPasteValue('')
-    void navigator.clipboard?.readText()
-      .then((text) => { if (text.trim()) setRoundPasteValue(text) })
-      .catch(() => undefined)
+    setRoundClipboard(structuredClone(project.current.log[round]!))
+    setNotice(`${label}をコピーしました。ペーストすると同じ局を直後へ追加します`)
   }
 
   const pasteSelectedRound = () => {
-    if (!project) return
+    if (!project || !roundClipboard) return
     try {
-      const copied = parseClipboardRound(roundPasteValue, project.current)
       const insertAt = round + 1
-      const output = insertRound(project.current, insertAt, copied.round)
+      const output = insertRound(project.current, insertAt, roundClipboard)
       decodeMatch(output)
       clearEditPipeline()
       setCurrentProject(applyProjectLogChange(project, {
         type: 'round-paste',
         round: insertAt,
-        sourceRoundNumber: copied.sourceRoundNumber,
+        sourceRoundNumber: roundClipboard[0][0],
       }, output, shiftLockedRefsForInsert(project.lockedRefs, insertAt)))
       setRound(insertAt)
       setEvent(0)
       setSelection(undefined)
       setPlaying(false)
-      setRoundPasteOpen(false)
-      setRoundPasteValue('')
-      setNotice('コピーした局面を、選択した局の直後へ追加しました')
+      setNotice(`${roundLabel(roundClipboard[0][0])}をもう一度追加しました`)
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught))
     }
@@ -557,7 +543,8 @@ export function App() {
           onPlaying={setPlaying}
           onKeepOnlyRound={keepSelectedRoundOnly}
           onCopyRound={copySelectedRound}
-          onPasteRound={openRoundPaste}
+          canPasteRound={Boolean(roundClipboard)}
+          onPasteRound={pasteSelectedRound}
         />
         <section className="table-stage">
           <div className="stage-toolbar">
@@ -695,36 +682,6 @@ export function App() {
                 }}
               >
                 <Upload size={16} /> 読み込む
-              </button>
-            </footer>
-          </section>
-        </div>
-      )}
-
-      {roundPasteOpen && (
-        <div className="dialog-backdrop">
-          <section className="paste-dialog" role="dialog" aria-modal="true" aria-labelledby="round-paste-title">
-            <header>
-              <div><span className="eyebrow">REPLACE ROUND</span><h2 id="round-paste-title">選択した局へペースト</h2></div>
-              <button type="button" aria-label="閉じる" onClick={() => setRoundPasteOpen(false)}><X /></button>
-            </header>
-            <div className="privacy-note"><Info size={16} /> 「この局をコピー」で作成した1局分のJSONを貼り付けてください。選択中の局の直後へ追加します。</div>
-            <textarea
-              autoFocus
-              value={roundPasteValue}
-              onChange={(change) => setRoundPasteValue(change.target.value)}
-              placeholder='{"title":...,"name":[...],"log":[[...]]}'
-              aria-label="貼り付ける局面JSON"
-            />
-            <footer>
-              <button type="button" onClick={() => setRoundPasteOpen(false)}>キャンセル</button>
-              <button
-                type="button"
-                className="primary-action"
-                disabled={!roundPasteValue.trim()}
-                onClick={pasteSelectedRound}
-              >
-                <Upload size={16} /> この局の後へ追加
               </button>
             </footer>
           </section>

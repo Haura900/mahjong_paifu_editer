@@ -12,6 +12,7 @@ interface TimelineProps {
   onPlaying: (playing: boolean) => void
   onKeepOnlyRound: () => void
   onCopyRound: () => void
+  canPasteRound: boolean
   onPasteRound: () => void
 }
 
@@ -25,6 +26,7 @@ export function Timeline({
   onPlaying,
   onKeepOnlyRound,
   onCopyRound,
+  canPasteRound,
   onPasteRound,
 }: TimelineProps) {
   const decodedRound = match.rounds[round]!
@@ -38,7 +40,7 @@ export function Timeline({
         </div>
         <div className="round-actions" aria-label="選択局の操作">
           <button type="button" onClick={onCopyRound}><Copy size={14} /> この局をコピー</button>
-          <button type="button" onClick={onPasteRound}><ClipboardPaste size={14} /> この局の後へペースト</button>
+          <button type="button" onClick={onPasteRound} disabled={!canPasteRound}><ClipboardPaste size={14} /> この局の後へペースト</button>
           <button type="button" className="danger" onClick={onKeepOnlyRound} disabled={match.rounds.length === 1}>
             <ListX size={14} /> この局だけ残す
           </button>
