@@ -32,7 +32,14 @@ import {
   undoProject,
 } from './domain/project'
 import { decodeMatch, roundLabel, snapshotAt } from './domain/replay'
-import { keepOnlyRound, parseClipboardRound, replaceRound, singleRoundLog } from './domain/rounds'
+import {
+  insertRound,
+  keepOnlyRound,
+  lockedRefsForSingleRound,
+  parseClipboardRound,
+  shiftLockedRefsForInsert,
+  singleRoundLog,
+} from './domain/rounds'
 import { solveEdit } from './domain/solver'
 import type {
   EditorProject,
@@ -357,7 +364,12 @@ export function App() {
     if (!window.confirm(`${label}だけを残し、ほかの${project.current.log.length - 1}局を削除しますか？\n「元に戻す」で復元できます。`)) return
     clearEditPipeline()
     const output = keepOnlyRound(project.current, round)
-    setCurrentProject(applyProjectLogChange(project, { type: 'round-keep-only', round }, output))
+    setCurrentProject(applyProjectLogChange(
+      project,
+      { type: 'round-keep-only', round },
+      output,
+      lockedRefsForSingleRound(project.lockedRefs, round),
+    ))
     setRound(0)
     setEvent(0)
     setSelection(undefined)
@@ -387,20 +399,22 @@ export function App() {
     if (!project) return
     try {
       const copied = parseClipboardRound(roundPasteValue, project.current)
-      const output = replaceRound(project.current, round, copied.round)
+      const insertAt = round + 1
+      const output = insertRound(project.current, insertAt, copied.round)
       decodeMatch(output)
       clearEditPipeline()
       setCurrentProject(applyProjectLogChange(project, {
         type: 'round-paste',
-        round,
+        round: insertAt,
         sourceRoundNumber: copied.sourceRoundNumber,
-      }, output))
+      }, output, shiftLockedRefsForInsert(project.lockedRefs, insertAt)))
+      setRound(insertAt)
       setEvent(0)
       setSelection(undefined)
       setPlaying(false)
       setRoundPasteOpen(false)
       setRoundPasteValue('')
-      setNotice('選択した局を、コピーした局面で置き換えました')
+      setNotice('コピーした局面を、選択した局の直後へ追加しました')
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught))
     }
@@ -694,7 +708,7 @@ export function App() {
               <div><span className="eyebrow">REPLACE ROUND</span><h2 id="round-paste-title">選択した局へペースト</h2></div>
               <button type="button" aria-label="閉じる" onClick={() => setRoundPasteOpen(false)}><X /></button>
             </header>
-            <div className="privacy-note"><Info size={16} /> 「この局をコピー」で作成した1局分のJSONを貼り付けてください。現在の局を置き換えます。</div>
+            <div className="privacy-note"><Info size={16} /> 「この局をコピー」で作成した1局分のJSONを貼り付けてください。選択中の局の直後へ追加します。</div>
             <textarea
               autoFocus
               value={roundPasteValue}
@@ -710,7 +724,7 @@ export function App() {
                 disabled={!roundPasteValue.trim()}
                 onClick={pasteSelectedRound}
               >
-                <Upload size={16} /> この局を置き換える
+                <Upload size={16} /> この局の後へ追加
               </button>
             </footer>
           </section>

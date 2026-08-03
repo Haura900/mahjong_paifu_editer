@@ -2,7 +2,14 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { decodeMatch } from '../replay'
-import { keepOnlyRound, parseClipboardRound, replaceRound, singleRoundLog } from '../rounds'
+import {
+  insertRound,
+  keepOnlyRound,
+  lockedRefsForSingleRound,
+  parseClipboardRound,
+  shiftLockedRefsForInsert,
+  singleRoundLog,
+} from '../rounds'
 import type { TenhouLog } from '../types'
 
 const sample = JSON.parse(readFileSync(resolve(process.cwd(), 'sample.txt'), 'utf8')) as TenhouLog
@@ -18,13 +25,26 @@ describe('round structure operations', () => {
     expect(() => decodeMatch(output)).not.toThrow()
   })
 
-  it('copies one compatible round and pastes it over the selected round', () => {
+  it('copies one compatible round and pastes it after the selected round', () => {
     const copiedText = JSON.stringify(singleRoundLog(sample, 0))
     const copied = parseClipboardRound(copiedText, sample)
-    const output = replaceRound(sample, 1, copied.round)
-    expect(output.log).toHaveLength(sample.log.length)
+    const output = insertRound(sample, 1, copied.round)
+    expect(output.log).toHaveLength(sample.log.length + 1)
     expect(output.log[1]).toEqual(sample.log[0])
     expect(output.log[0]).toEqual(sample.log[0])
+  })
+
+  it('remaps locks when rounds are inserted or all other rounds are removed', () => {
+    const locks = ['0:deal:0:0:-', '4:draw:1:2:-', 'score:4:2']
+    expect(shiftLockedRefsForInsert(locks, 2)).toEqual([
+      '0:deal:0:0:-',
+      '5:draw:1:2:-',
+      'score:5:2',
+    ])
+    expect(lockedRefsForSingleRound(locks, 4)).toEqual([
+      '0:draw:1:2:-',
+      'score:0:2',
+    ])
   })
 
   it('rejects a copied round whose player order differs', () => {

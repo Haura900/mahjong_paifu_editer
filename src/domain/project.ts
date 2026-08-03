@@ -4,6 +4,8 @@ import type {
   EditorProject,
   EditRequest,
   EditTransaction,
+  ProjectEditRequest,
+  RoundEditRequest,
   SolverResult,
   TenhouLog,
 } from './types'
@@ -84,8 +86,9 @@ export function applySolvedProjectEdit(
 
 export function applyProjectLogChange(
   project: EditorProject,
-  request: Extract<EditRequest, { type: 'round-keep-only' | 'round-paste' }>,
+  request: RoundEditRequest,
   output: TenhouLog,
+  lockedRefs: string[],
 ): EditorProject {
   const now = new Date().toISOString()
   const transaction: EditTransaction = {
@@ -98,15 +101,14 @@ export function applyProjectLogChange(
     changes: [],
     seed: project.seed,
     lockedRefsBefore: [...project.lockedRefs],
-    lockedRefsAfter: [],
+    lockedRefsAfter: [...lockedRefs],
   }
   return {
     ...project,
     current: structuredClone(output),
     transactions: [...project.transactions, transaction],
     redo: [],
-    // 局番号を含む参照キーは構成変更後に別の局を指し得るため解除する。
-    lockedRefs: [],
+    lockedRefs,
     updatedAt: now,
   }
 }
@@ -182,7 +184,7 @@ export function parseProject(input: string): EditorProject {
   return structuredClone(value as EditorProject)
 }
 
-export function editRequestLabel(request: EditRequest): string {
+export function editRequestLabel(request: ProjectEditRequest): string {
   if (request.type === 'tile') return '牌を変更'
   if (request.type === 'meld-add') return '副露を追加'
   if (request.type === 'meld-remove') return '副露を削除'

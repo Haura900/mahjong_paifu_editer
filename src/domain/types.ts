@@ -187,7 +187,7 @@ export interface EditTransaction {
   id: string
   at: string
   label: string
-  request: EditRequest
+  request: ProjectEditRequest
   before: TenhouLog
   after: TenhouLog
   changes: AutoChange[]
@@ -209,8 +209,12 @@ export type EditRequest =
   | { type: 'meld-change'; round: number; event: number; actor: Seat; meldId: string; meldType: MeldType }
   | { type: 'reach'; round: number; event: number; actor: Seat; enabled: boolean }
   | { type: 'score'; round: number; seat: Seat; score: number }
+
+export type RoundEditRequest =
   | { type: 'round-keep-only'; round: number }
   | { type: 'round-paste'; round: number; sourceRoundNumber: number }
+
+export type ProjectEditRequest = EditRequest | RoundEditRequest
 
 export interface SolverResult {
   ok: boolean

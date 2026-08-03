@@ -1896,10 +1896,8 @@ export function solveEdit(
       conflict = applyMeldChange(output, request, changes)
     } else if (request.type === 'reach') {
       conflict = applyReach(output, request, changes)
-    } else if (request.type === 'score') {
-      conflict = applyScore(output, request, changes)
     } else {
-      conflict = '局の構成変更は牌編集ソルバーでは処理できません'
+      conflict = applyScore(output, request, changes)
     }
     if (conflict) return { ok: false, changes: [], diagnostics: [], conflict }
     if (request.type === 'meld-add' && request.forced) {

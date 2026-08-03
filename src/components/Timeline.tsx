@@ -38,7 +38,7 @@ export function Timeline({
         </div>
         <div className="round-actions" aria-label="選択局の操作">
           <button type="button" onClick={onCopyRound}><Copy size={14} /> この局をコピー</button>
-          <button type="button" onClick={onPasteRound}><ClipboardPaste size={14} /> この局へペースト</button>
+          <button type="button" onClick={onPasteRound}><ClipboardPaste size={14} /> この局の後へペースト</button>
           <button type="button" className="danger" onClick={onKeepOnlyRound} disabled={match.rounds.length === 1}>
             <ListX size={14} /> この局だけ残す
           </button>
