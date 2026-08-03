@@ -64,6 +64,33 @@ describe('browser-facing editor workflow', () => {
     expect(screen.getByRole('button', { name: /クリップボードへコピー/ })).toBeInTheDocument()
   })
 
+  it('fixes the selected analysis user at the bottom and reminds the East-1 wind on copy', async () => {
+    const { container } = render(<App />)
+    expect(await screen.findByText(/全 11 局/)).toBeInTheDocument()
+    fireEvent.change(screen.getByRole('combobox', { name: '分析ユーザー' }), { target: { value: '1' } })
+
+    expect(container.querySelector('.player-bottom .player-name')).toHaveTextContent('はうらC')
+    expect(screen.getByRole('checkbox', { name: '下に固定' })).toBeChecked()
+
+    fireEvent.click(screen.getByRole('button', { name: 'この局をコピー' }))
+    const dialog = await screen.findByRole('dialog', { name: /JSONをコピー/ })
+    expect(dialog).toHaveTextContent('分析視点: はうらC（東1局では南家）')
+    expect(dialog).toHaveTextContent('東1局がこのJSONから削除されていても')
+    const copied = JSON.parse((screen.getByRole('textbox', { name: '編集済み牌譜JSON' }) as HTMLTextAreaElement).value)
+    expect(copied.log).toHaveLength(1)
+    expect(copied.name[1]).toBe('はうらC')
+  })
+
+  it('keeps only the selected round and restores deleted rounds with undo', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    render(<App />)
+    expect(await screen.findByText(/全 11 局/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'この局だけ残す' }))
+    expect(await screen.findByText(/全 1 局/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '元に戻す' }))
+    expect(await screen.findByText(/全 11 局/)).toBeInTheDocument()
+  })
+
   it('asks before creating a meld that the current discard cannot support', async () => {
     render(<App />)
     expect(await screen.findByText(/全 11 局/)).toBeInTheDocument()

@@ -18,8 +18,9 @@ import {
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import sampleUrl from '../sample.txt?url'
-import { CodecError, encodeTenhouLog, parseTenhouLog } from './domain/codec'
+import { CodecError, encodeTenhouLog, parseTenhouLog, seatName } from './domain/codec'
 import {
+  applyProjectLogChange,
   applySolvedProjectEdit,
   createProject,
   editRequestLabel,
@@ -30,7 +31,8 @@ import {
   toggleLock,
   undoProject,
 } from './domain/project'
-import { decodeMatch, snapshotAt } from './domain/replay'
+import { decodeMatch, roundLabel, snapshotAt } from './domain/replay'
+import { keepOnlyRound, parseClipboardRound, replaceRound, singleRoundLog } from './domain/rounds'
 import { solveEdit } from './domain/solver'
 import type {
   EditorProject,
@@ -53,6 +55,8 @@ export function App() {
   const [round, setRound] = useState(0)
   const [event, setEvent] = useState(0)
   const [viewpoint, setViewpoint] = useState<Seat>(0)
+  const [analysisSeat, setAnalysisSeat] = useState<Seat>()
+  const [viewpointLocked, setViewpointLocked] = useState(false)
   const [selectedSeat, setSelectedSeat] = useState<Seat>(0)
   const [selection, setSelection] = useState<Selection>()
   const [playing, setPlaying] = useState(false)
@@ -60,11 +64,13 @@ export function App() {
   const [editQueue, setEditQueue] = useState<EditQueueEntry[]>([])
   const [activeJobId, setActiveJobId] = useState<string>()
   const [changeLogOpen, setChangeLogOpen] = useState(false)
-  const [jsonExportOpen, setJsonExportOpen] = useState(false)
+  const [jsonExport, setJsonExport] = useState<{ text: string; title: string; filename: string }>()
   const [meldPlanRequest, setMeldPlanRequest] = useState<Extract<EditRequest, { type: 'meld-add' }>>()
   const [justApplied, setJustApplied] = useState(false)
   const [pasteOpen, setPasteOpen] = useState(false)
   const [pasteValue, setPasteValue] = useState('')
+  const [roundPasteOpen, setRoundPasteOpen] = useState(false)
+  const [roundPasteValue, setRoundPasteValue] = useState('')
   const [dragging, setDragging] = useState(false)
   const [notice, setNotice] = useState<string>()
   const [error, setError] = useState<string>()
@@ -97,6 +103,8 @@ export function App() {
     setRound(0)
     setEvent(0)
     setViewpoint(decoded.rounds[0]?.snapshots[0]?.dealer ?? 0)
+    setAnalysisSeat(undefined)
+    setViewpointLocked(false)
     setSelectedSeat(decoded.rounds[0]?.snapshots[0]?.dealer ?? 0)
     setSelection(undefined)
     setError(undefined)
@@ -112,6 +120,8 @@ export function App() {
         setCurrentProject(loaded)
         setRound(0)
         setEvent(0)
+        setAnalysisSeat(undefined)
+        setViewpointLocked(false)
         setSelection(undefined)
         setError(undefined)
         setNotice(`${label}から編集履歴を復元しました`)
@@ -153,6 +163,13 @@ export function App() {
     [processingEntries],
   )
   const exportedJson = useMemo(() => project ? encodeTenhouLog(project.current) : '', [project])
+  const analysisProfile = useMemo(() => {
+    if (!decoded || analysisSeat === undefined) return undefined
+    return {
+      name: decoded.raw.name[analysisSeat]!,
+      eastOneWind: seatName(analysisSeat),
+    }
+  }, [analysisSeat, decoded])
 
   useEffect(() => {
     if (!playing || !decodedRound) return
@@ -169,9 +186,13 @@ export function App() {
   }, [playing, decodedRound])
 
   useEffect(() => {
-    if (!autoRotate || state?.turn === undefined) return
+    if (viewpointLocked || !autoRotate || state?.turn === undefined) return
     setViewpoint(state.turn)
-  }, [autoRotate, state?.turn])
+  }, [autoRotate, state?.turn, viewpointLocked])
+
+  useEffect(() => {
+    if (viewpointLocked && analysisSeat !== undefined) setViewpoint(analysisSeat)
+  }, [analysisSeat, viewpointLocked])
 
   useEffect(() => {
     if (!state || !selection) return
@@ -322,15 +343,78 @@ export function App() {
     setEvent(0)
     setSelection(undefined)
     setPlaying(false)
+    if (viewpointLocked && analysisSeat !== undefined) {
+      setViewpoint(analysisSeat)
+      return
+    }
     const dealer = decoded?.rounds[next]?.snapshots[0]?.dealer
     if (autoRotate && dealer !== undefined) setViewpoint(dealer)
   }
 
-  const exportJsonFile = async () => {
+  const keepSelectedRoundOnly = () => {
+    if (!project || !decodedRound || project.current.log.length === 1) return
+    const label = roundLabel(decodedRound.raw[0][0])
+    if (!window.confirm(`${label}だけを残し、ほかの${project.current.log.length - 1}局を削除しますか？\n「元に戻す」で復元できます。`)) return
+    clearEditPipeline()
+    const output = keepOnlyRound(project.current, round)
+    setCurrentProject(applyProjectLogChange(project, { type: 'round-keep-only', round }, output))
+    setRound(0)
+    setEvent(0)
+    setSelection(undefined)
+    setPlaying(false)
+    setNotice(`${label}だけを残しました。東1局の風情報はプレイヤー名の並びから保持しています`)
+  }
+
+  const copySelectedRound = () => {
+    if (!project || !decodedRound) return
+    const label = roundLabel(decodedRound.raw[0][0])
+    setJsonExport({
+      text: encodeTenhouLog(singleRoundLog(project.current, round), true),
+      title: `${label}のJSONをコピー`,
+      filename: `${label}-paifu.json`,
+    })
+  }
+
+  const openRoundPaste = () => {
+    setRoundPasteOpen(true)
+    setRoundPasteValue('')
+    void navigator.clipboard?.readText()
+      .then((text) => { if (text.trim()) setRoundPasteValue(text) })
+      .catch(() => undefined)
+  }
+
+  const pasteSelectedRound = () => {
     if (!project) return
     try {
-      const method = await saveText('edited-paifu.json', exportedJson, '天鳳JSON牌譜')
-      setNotice(method === 'direct' ? '編集済みJSONを保存しました' : '編集済みJSONをダウンロードしました')
+      const copied = parseClipboardRound(roundPasteValue, project.current)
+      const output = replaceRound(project.current, round, copied.round)
+      decodeMatch(output)
+      clearEditPipeline()
+      setCurrentProject(applyProjectLogChange(project, {
+        type: 'round-paste',
+        round,
+        sourceRoundNumber: copied.sourceRoundNumber,
+      }, output))
+      setEvent(0)
+      setSelection(undefined)
+      setPlaying(false)
+      setRoundPasteOpen(false)
+      setRoundPasteValue('')
+      setNotice('選択した局を、コピーした局面で置き換えました')
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught))
+    }
+  }
+
+  const exportJsonFile = async (text = exportedJson, filename = 'edited-paifu.json') => {
+    if (!project) return
+    try {
+      const method = await saveText(filename, text, '天鳳JSON牌譜')
+      const action = method === 'direct' ? '編集済みJSONを保存しました' : '編集済みJSONをダウンロードしました'
+      const reminder = analysisProfile
+        ? `送信時は「${analysisProfile.name}視点（東1局では${analysisProfile.eastOneWind}）」を添えてください`
+        : '送信前に分析ユーザーを指定してください'
+      setNotice(`${action}。${reminder}`)
     } catch {
       // User cancelled the platform picker.
     }
@@ -395,7 +479,16 @@ export function App() {
           <div className="action-menu">
             <button type="button"><Save size={16} /> 保存 <ChevronDown size={13} /></button>
             <div className="action-menu-popover">
-              <button type="button" onClick={() => setJsonExportOpen(true)}><Braces size={15} /> 互換JSONをコピー</button>
+              <button
+                type="button"
+                onClick={() => setJsonExport({
+                  text: exportedJson,
+                  title: '編集済みJSONをコピー',
+                  filename: 'edited-paifu.json',
+                })}
+              >
+                <Braces size={15} /> 互換JSONをコピー
+              </button>
               <button type="button" onClick={() => void exportJsonFile()}><Download size={15} /> JSONファイルを保存</button>
               <button type="button" onClick={() => void exportProject()}><FileJson size={15} /> 編集プロジェクトを保存</button>
               <button type="button" onClick={() => projectInputRef.current?.click()}><FileInput size={15} /> 編集プロジェクトを開く</button>
@@ -448,6 +541,9 @@ export function App() {
           onRound={handleRound}
           onEvent={setEvent}
           onPlaying={setPlaying}
+          onKeepOnlyRound={keepSelectedRoundOnly}
+          onCopyRound={copySelectedRound}
+          onPasteRound={openRoundPaste}
         />
         <section className="table-stage">
           <div className="stage-toolbar">
@@ -457,10 +553,49 @@ export function App() {
               <span>·</span>
               <span>{decoded.raw.name.join(' / ')}</span>
             </div>
-            <label>
-              <input type="checkbox" checked={autoRotate} onChange={(change) => setAutoRotate(change.target.checked)} />
-              <span>手番へ自動回転</span>
-            </label>
+            <div className="viewpoint-controls">
+              <label className="analysis-user-select">
+                <span>分析ユーザー</span>
+                <select
+                  aria-label="分析ユーザー"
+                  value={analysisSeat ?? ''}
+                  onChange={(change) => {
+                    if (change.target.value === '') {
+                      setAnalysisSeat(undefined)
+                      setViewpointLocked(false)
+                      return
+                    }
+                    const seat = Number(change.target.value) as Seat
+                    setAnalysisSeat(seat)
+                    setViewpoint(seat)
+                    setViewpointLocked(true)
+                  }}
+                >
+                  <option value="">選択してください</option>
+                  {decoded.raw.name.map((name, seat) => (
+                    <option key={seat} value={seat}>{name}（東1局では{seatName(seat as Seat)}）</option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={viewpointLocked}
+                  disabled={analysisSeat === undefined}
+                  onChange={(change) => setViewpointLocked(change.target.checked)}
+                />
+                <span>下に固定</span>
+              </label>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={autoRotate}
+                  disabled={viewpointLocked}
+                  onChange={(change) => setAutoRotate(change.target.checked)}
+                />
+                <span>手番へ自動回転</span>
+              </label>
+            </div>
           </div>
           <TableView
             state={state}
@@ -475,7 +610,10 @@ export function App() {
             onSelect={setSelection}
             onSelectSeat={(seat) => { setSelectedSeat(seat); setSelection(undefined) }}
             onToggleLock={(key) => setCurrentProject(toggleLock(project, key))}
-            onRotate={() => setViewpoint(((viewpoint + 1) % 4) as Seat)}
+            onRotate={() => {
+              setViewpointLocked(false)
+              setViewpoint(((viewpoint + 1) % 4) as Seat)
+            }}
           />
         </section>
         <Inspector
@@ -494,11 +632,13 @@ export function App() {
       </main>
 
       {changeLogOpen && <ChangeLogDrawer entries={editQueue} onClose={() => setChangeLogOpen(false)} />}
-      {jsonExportOpen && (
+      {jsonExport && (
         <JsonExportDialog
-          text={exportedJson}
-          onClose={() => setJsonExportOpen(false)}
-          onSave={() => void exportJsonFile()}
+          text={jsonExport.text}
+          title={jsonExport.title}
+          analysis={analysisProfile}
+          onClose={() => setJsonExport(undefined)}
+          onSave={() => void exportJsonFile(jsonExport.text, jsonExport.filename)}
         />
       )}
       {meldPlanRequest && (
@@ -541,6 +681,36 @@ export function App() {
                 }}
               >
                 <Upload size={16} /> 読み込む
+              </button>
+            </footer>
+          </section>
+        </div>
+      )}
+
+      {roundPasteOpen && (
+        <div className="dialog-backdrop">
+          <section className="paste-dialog" role="dialog" aria-modal="true" aria-labelledby="round-paste-title">
+            <header>
+              <div><span className="eyebrow">REPLACE ROUND</span><h2 id="round-paste-title">選択した局へペースト</h2></div>
+              <button type="button" aria-label="閉じる" onClick={() => setRoundPasteOpen(false)}><X /></button>
+            </header>
+            <div className="privacy-note"><Info size={16} /> 「この局をコピー」で作成した1局分のJSONを貼り付けてください。現在の局を置き換えます。</div>
+            <textarea
+              autoFocus
+              value={roundPasteValue}
+              onChange={(change) => setRoundPasteValue(change.target.value)}
+              placeholder='{"title":...,"name":[...],"log":[[...]]}'
+              aria-label="貼り付ける局面JSON"
+            />
+            <footer>
+              <button type="button" onClick={() => setRoundPasteOpen(false)}>キャンセル</button>
+              <button
+                type="button"
+                className="primary-action"
+                disabled={!roundPasteValue.trim()}
+                onClick={pasteSelectedRound}
+              >
+                <Upload size={16} /> この局を置き換える
               </button>
             </footer>
           </section>

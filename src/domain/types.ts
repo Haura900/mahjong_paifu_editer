@@ -192,6 +192,8 @@ export interface EditTransaction {
   after: TenhouLog
   changes: AutoChange[]
   seed: number
+  lockedRefsBefore?: string[]
+  lockedRefsAfter?: string[]
 }
 
 export interface ForcedMeldPlan {
@@ -207,6 +209,8 @@ export type EditRequest =
   | { type: 'meld-change'; round: number; event: number; actor: Seat; meldId: string; meldType: MeldType }
   | { type: 'reach'; round: number; event: number; actor: Seat; enabled: boolean }
   | { type: 'score'; round: number; seat: Seat; score: number }
+  | { type: 'round-keep-only'; round: number }
+  | { type: 'round-paste'; round: number; sourceRoundNumber: number }
 
 export interface SolverResult {
   ok: boolean

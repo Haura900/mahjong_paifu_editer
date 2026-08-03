@@ -52,6 +52,11 @@ export function applySolvedProjectEdit(
 ): { project: EditorProject; result: SolverResult } {
   if (!result.ok || !result.output) return { project, result }
   const now = new Date().toISOString()
+  const lockedRefs = [...project.lockedRefs]
+  if (request.type === 'score') {
+    const key = `score:${request.round}:${request.seat}`
+    if (!lockedRefs.includes(key)) lockedRefs.push(key)
+  }
   const transaction: EditTransaction = {
     id: id(),
     at: now,
@@ -61,11 +66,8 @@ export function applySolvedProjectEdit(
     after: structuredClone(result.output),
     changes: result.changes,
     seed: project.seed,
-  }
-  const lockedRefs = [...project.lockedRefs]
-  if (request.type === 'score') {
-    const key = `score:${request.round}:${request.seat}`
-    if (!lockedRefs.includes(key)) lockedRefs.push(key)
+    lockedRefsBefore: [...project.lockedRefs],
+    lockedRefsAfter: [...lockedRefs],
   }
   return {
     result,
@@ -80,6 +82,35 @@ export function applySolvedProjectEdit(
   }
 }
 
+export function applyProjectLogChange(
+  project: EditorProject,
+  request: Extract<EditRequest, { type: 'round-keep-only' | 'round-paste' }>,
+  output: TenhouLog,
+): EditorProject {
+  const now = new Date().toISOString()
+  const transaction: EditTransaction = {
+    id: id(),
+    at: now,
+    label: editRequestLabel(request),
+    request,
+    before: structuredClone(project.current),
+    after: structuredClone(output),
+    changes: [],
+    seed: project.seed,
+    lockedRefsBefore: [...project.lockedRefs],
+    lockedRefsAfter: [],
+  }
+  return {
+    ...project,
+    current: structuredClone(output),
+    transactions: [...project.transactions, transaction],
+    redo: [],
+    // 局番号を含む参照キーは構成変更後に別の局を指し得るため解除する。
+    lockedRefs: [],
+    updatedAt: now,
+  }
+}
+
 export function undoProject(project: EditorProject): EditorProject {
   const transaction = project.transactions.at(-1)
   if (!transaction) return project
@@ -88,6 +119,7 @@ export function undoProject(project: EditorProject): EditorProject {
     current: structuredClone(transaction.before),
     transactions: project.transactions.slice(0, -1),
     redo: [transaction, ...project.redo],
+    lockedRefs: [...(transaction.lockedRefsBefore ?? project.lockedRefs)],
     updatedAt: new Date().toISOString(),
   }
 }
@@ -100,6 +132,7 @@ export function redoProject(project: EditorProject): EditorProject {
     current: structuredClone(transaction.after),
     transactions: [...project.transactions, transaction],
     redo: project.redo.slice(1),
+    lockedRefs: [...(transaction.lockedRefsAfter ?? project.lockedRefs)],
     updatedAt: new Date().toISOString(),
   }
 }
@@ -155,5 +188,7 @@ export function editRequestLabel(request: EditRequest): string {
   if (request.type === 'meld-remove') return '副露を削除'
   if (request.type === 'meld-change') return '副露の種類を変更'
   if (request.type === 'reach') return request.enabled ? 'リーチを設定' : 'リーチを解除'
-  return '開始点を変更・固定'
+  if (request.type === 'score') return '開始点を変更・固定'
+  if (request.type === 'round-keep-only') return '選択局以外を削除'
+  return '選択局へ局面をペースト'
 }

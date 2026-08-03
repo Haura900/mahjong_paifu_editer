@@ -36,6 +36,7 @@ body {
 
 button,
 input,
+select,
 textarea {
   font: inherit;
 }
@@ -46,6 +47,7 @@ button {
 
 button:focus-visible,
 input:focus-visible,
+select:focus-visible,
 textarea:focus-visible {
   outline: 3px solid rgb(189 148 81 / 45%);
   outline-offset: 2px;
@@ -273,10 +275,46 @@ textarea:focus-visible {
 
 .round-list {
   display: grid;
-  max-height: calc(100vh - 158px);
+  max-height: calc(100vh - 286px);
   padding: 0 8px 16px;
   gap: 3px;
   overflow-y: auto;
+}
+
+.round-actions {
+  display: grid;
+  padding: 0 10px 12px;
+  gap: 5px;
+}
+
+.round-actions button {
+  display: flex;
+  min-height: 34px;
+  padding: 0 9px;
+  align-items: center;
+  border: 1px solid #d5dbd7;
+  border-radius: 6px;
+  background: #fff;
+  color: #3c4c46;
+  font-size: 9px;
+  font-weight: 700;
+  cursor: pointer;
+  gap: 7px;
+}
+
+.round-actions button:hover:not(:disabled) {
+  border-color: #aebfb8;
+  background: #f7faf8;
+}
+
+.round-actions button.danger {
+  border-color: #e3c9c4;
+  color: #9f4037;
+}
+
+.round-actions button:disabled {
+  opacity: .35;
+  cursor: not-allowed;
 }
 
 .round-list > button {
@@ -353,6 +391,12 @@ textarea:focus-visible {
   gap: 7px;
 }
 
+.stage-toolbar .viewpoint-controls {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 9px;
+}
+
 .stage-toolbar strong {
   color: var(--ink);
 }
@@ -370,6 +414,31 @@ textarea:focus-visible {
   align-items: center;
   gap: 5px;
   cursor: pointer;
+}
+
+.stage-toolbar .analysis-user-select {
+  gap: 6px;
+}
+
+.analysis-user-select > span {
+  color: #3d4d47;
+  font-weight: 700;
+}
+
+.analysis-user-select select {
+  max-width: 230px;
+  min-height: 30px;
+  padding: 0 28px 0 8px;
+  border: 1px solid #c9d3ce;
+  border-radius: 5px;
+  background: #fff;
+  color: #24342f;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.stage-toolbar input:disabled + span {
+  opacity: .45;
 }
 
 .table-shell {
@@ -1896,11 +1965,61 @@ textarea:focus-visible {
   line-height: 1.65;
 }
 
+.analysis-reminder {
+  display: grid;
+  margin: 15px 22px 9px;
+  padding: 12px;
+  grid-template-columns: 22px 1fr;
+  align-items: center;
+  border: 1px solid #b9d8ca;
+  border-radius: 7px;
+  background: #edf7f2;
+  color: #2f6d56;
+  gap: 9px;
+}
+
+.analysis-reminder.is-missing {
+  border-color: #e5c2bc;
+  background: #fff1ef;
+  color: #9c3d34;
+}
+
+.analysis-reminder strong,
+.analysis-reminder span {
+  display: block;
+}
+
+.analysis-reminder strong {
+  font-size: 11px;
+}
+
+.analysis-reminder span {
+  margin-top: 3px;
+  font-size: 9px;
+  line-height: 1.55;
+}
+
+.json-export-dialog > .send-reminder {
+  display: flex;
+  align-items: center;
+  margin-block: 8px;
+  padding: 8px 10px;
+  border-radius: 5px;
+  background: #fff5dc;
+  color: #795e22;
+  font-weight: 700;
+  gap: 7px;
+}
+
+.send-reminder svg {
+  flex: 0 0 auto;
+}
+
 .json-export-dialog textarea {
   display: block;
   width: calc(100% - 44px);
-  min-height: 390px;
-  max-height: 54vh;
+  min-height: 260px;
+  max-height: 42vh;
   margin: 0 22px 18px;
   padding: 13px;
   resize: vertical;
@@ -2127,6 +2246,15 @@ textarea:focus-visible {
     max-height: none;
     padding: 0 10px 10px;
     overflow-x: auto;
+  }
+
+  .round-actions {
+    grid-template-columns: repeat(3, minmax(130px, 1fr));
+    overflow-x: auto;
+  }
+
+  .round-actions button {
+    justify-content: center;
   }
 
   .round-list > button {
