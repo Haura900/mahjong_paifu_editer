@@ -616,49 +616,6 @@ function locationLabel(location: TileTrace['location']): string {
   return { hand: '手牌', river: '河', meld: '副露', dora: 'ドラ表示', unknown: '未確定牌山' }[location]
 }
 
-function propagateScores(
-  log: TenhouLog,
-  fromRound: number,
-  changes: AutoChange[],
-  locked: Set<string>,
-): void {
-  for (let round = fromRound; round < log.log.length - 1; round += 1) {
-    const replayed = replayRound(log, round)
-    const final = replayed.snapshots[replayed.snapshots.length - 1]!
-    const next = log.log[round + 1]!
-    for (let seat = 0; seat < 4; seat += 1) {
-      const lockKey = `score:${round + 1}:${seat}`
-      if (locked.has(lockKey)) continue
-      const before = next[1][seat]!
-      const after = final.scores[seat]!
-      if (before === after) continue
-      next[1][seat] = after
-      changes.push({
-        id: `change-${changes.length + 1}`,
-        kind: 'propagation',
-        ref: { round: round + 1, section: 'deal', seat: seat as Seat, index: -1 },
-        before,
-        after,
-        reason: `前局の点数台帳が変わったため、${next[0][0] + 1}局目の開始点へ差分を伝播`,
-      })
-    }
-    const result = log.log[round]![16]
-    const beforeSticks = next[0][2]
-    const afterSticks = result[0] === '和了' ? 0 : final.riichiSticks
-    if (beforeSticks !== afterSticks) {
-      next[0][2] = afterSticks
-      changes.push({
-        id: `change-${changes.length + 1}`,
-        kind: 'propagation',
-        ref: { round: round + 1, section: 'deal', index: -3 },
-        before: beforeSticks,
-        after: afterSticks,
-        reason: '前局の終局種別とリーチ成立状況から供託本数を更新',
-      })
-    }
-  }
-}
-
 function chooseChiCodes(called: TileCode, handCodes: TileCode[]): { codes: TileCode[]; calledIndex: number } | undefined {
   const normalized = normalizeTile(called)
   const suit = Math.floor(normalized / 10)
@@ -1982,7 +1939,6 @@ export function solveEdit(
       if (conflict) return { ok: false, changes: [], diagnostics: [], conflict }
       candidate = decodeMatch(output)
     }
-    propagateScores(output, request.round, changes, locked)
     candidate = decodeMatch(output)
     const newErrors = candidate.diagnostics.filter((diagnostic) =>
       isHardError(diagnostic)

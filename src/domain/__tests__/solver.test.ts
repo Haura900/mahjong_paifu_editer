@@ -683,9 +683,10 @@ describe('deterministic automatic correction solver', () => {
     expectPlayable(result.output!)
   })
 
-  it('turns a broken ron into a deterministic exhaustive draw and propagates its ledger', () => {
+  it('turns a broken ron into a deterministic exhaustive draw without changing later round starts', () => {
     const decoded = decodeMatch(sample)
     const round = decoded.rounds.findIndex((item) => item.events.some((event) => event.type === 'ron'))
+    const laterRoundStarts = sample.log.slice(round + 1).map((item) => structuredClone([item[0], item[1]]))
     const sourceRound = decoded.rounds[round]!
     const winEvent = sourceRound.events.find((event) => event.type === 'ron')!
     const state = sourceRound.snapshots[winEvent.index]!
@@ -708,14 +709,19 @@ describe('deterministic automatic correction solver', () => {
     expect(result.ok, result.conflict).toBe(true)
     expect(result.output!.log[round]![16][0]).toBe('流局')
     expect(result.changes.some((change) => change.reason.includes('牌山を補完'))).toBe(true)
+    expect(result.output!.log.slice(round + 1).map((item) => [item[0], item[1]])).toEqual(laterRoundStarts)
+    expect(result.changes.some((change) => change.kind === 'propagation')).toBe(false)
     expectPlayable(result.output!)
   }, 20_000)
 
-  it('propagates score changes and stops at a fixed start-score boundary', () => {
+  it('changes only the explicitly selected round start score', () => {
     const project = createProject(sample)
+    const originalRoundOneScores = [...project.current.log[1]![1]]
     const first = applyProjectEdit(project, { type: 'score', round: 0, seat: 0, score: 26000 })
     expect(first.result.ok, first.result.conflict).toBe(true)
     expect(first.project.lockedRefs).toContain('score:0:0')
+    expect(first.project.current.log[1]![1]).toEqual(originalRoundOneScores)
+    expect(first.result.changes.some((change) => change.kind === 'propagation')).toBe(false)
     const second = applyProjectEdit(first.project, { type: 'score', round: 1, seat: 0, score: 30000 })
     expect(second.result.ok, second.result.conflict).toBe(true)
     expect(second.project.lockedRefs).toContain('score:1:0')

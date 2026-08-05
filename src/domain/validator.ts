@@ -160,7 +160,7 @@ export function validateScoreContinuity(log: TenhouLog): Diagnostic[] {
     if (!scores.every((score, seat) => score === next[1][seat])) {
       diagnostics.push({
         code: 'SCORE_DISCONTINUITY',
-        severity: 'error',
+        severity: 'warning',
         message: `局${index + 1}の終了点 ${scores.join('/')} と次局開始点 ${next[1].join('/')} が一致しません（リーチ${reachCount}件）`,
         round: index,
       })
