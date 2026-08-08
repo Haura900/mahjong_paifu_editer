@@ -213,6 +213,7 @@ export type EditRequest =
 export type RoundEditRequest =
   | { type: 'round-keep-only'; round: number }
   | { type: 'round-paste'; round: number; sourceRoundNumber: number }
+  | { type: 'script'; round: number; script: string; scenes: number }
 
 export type ProjectEditRequest = EditRequest | RoundEditRequest
 

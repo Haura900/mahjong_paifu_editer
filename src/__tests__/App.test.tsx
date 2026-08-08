@@ -64,6 +64,28 @@ describe('browser-facing editor workflow', () => {
     expect(screen.getByRole('button', { name: /クリップボードへコピー/ })).toBeInTheDocument()
   })
 
+  it('builds an AI prompt from the visible table and user instruction', async () => {
+    render(<App />)
+    expect(await screen.findByText(/全 11 局/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /AI・スクリプト/ }))
+    expect(await screen.findByRole('dialog', { name: 'AI・テキスト編集' })).toBeInTheDocument()
+
+    const instruction = '上家の7巡目の4pを10巡目へずらす'
+    fireEvent.change(screen.getByRole('textbox', { name: '加工したい内容' }), { target: { value: instruction } })
+    fireEvent.click(screen.getByRole('button', { name: 'AI用テキストを生成' }))
+
+    const prompt = screen.getByRole('textbox', { name: 'AIに渡すテキスト' }) as HTMLTextAreaElement
+    expect(prompt.value).toContain(instruction)
+    expect(prompt.value).toContain('# 余っている字牌')
+    expect(prompt.value).toContain('# スクリプト仕様')
+    expect(prompt.value).toContain('SELF=')
+    expect(prompt.value).toContain('KAMI=')
+    sampleText.match(/"name":\s*\[([^\]]+)/)?.[1]
+      ?.split(',')
+      .map((name) => name.replaceAll('"', '').trim())
+      .forEach((name) => expect(prompt.value).toContain(name))
+  })
+
   it('fixes the selected analysis user at the bottom and reminds the East-1 wind on copy', async () => {
     const { container } = render(<App />)
     expect(await screen.findByText(/全 11 局/)).toBeInTheDocument()

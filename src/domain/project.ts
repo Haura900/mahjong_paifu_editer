@@ -1,6 +1,7 @@
 import { parseTenhouLog } from './codec'
 import { solveEdit } from './solver'
 import type {
+  AutoChange,
   EditorProject,
   EditRequest,
   EditTransaction,
@@ -89,6 +90,7 @@ export function applyProjectLogChange(
   request: RoundEditRequest,
   output: TenhouLog,
   lockedRefs: string[],
+  changes: AutoChange[] = [],
 ): EditorProject {
   const now = new Date().toISOString()
   const transaction: EditTransaction = {
@@ -98,7 +100,7 @@ export function applyProjectLogChange(
     request,
     before: structuredClone(project.current),
     after: structuredClone(output),
-    changes: [],
+    changes,
     seed: project.seed,
     lockedRefsBefore: [...project.lockedRefs],
     lockedRefsAfter: [...lockedRefs],
@@ -192,5 +194,8 @@ export function editRequestLabel(request: ProjectEditRequest): string {
   if (request.type === 'reach') return request.enabled ? 'リーチを設定' : 'リーチを解除'
   if (request.type === 'score') return '開始点を変更・固定'
   if (request.type === 'round-keep-only') return '選択局以外を削除'
+  if (request.type === 'script') return request.scenes
+    ? `スクリプトで${request.scenes}局面を作成`
+    : 'スクリプトを実行'
   return '選択局へ局面をペースト'
 }

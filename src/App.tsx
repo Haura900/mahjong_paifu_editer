@@ -8,6 +8,7 @@ import {
   Info,
   ListTree,
   LoaderCircle,
+  MessageSquareCode,
   Redo2,
   RotateCcw,
   Save,
@@ -39,6 +40,8 @@ import {
   shiftLockedRefsForInsert,
 } from './domain/rounds'
 import { solveEdit } from './domain/solver'
+import { buildAiEditPrompt } from './domain/aiPrompt'
+import { executePaifuScript } from './domain/script'
 import type {
   EditorProject,
   EditQueueEntry,
@@ -52,6 +55,7 @@ import { ChangeLogDrawer } from './components/ChangeLogDrawer'
 import { Inspector } from './components/Inspector'
 import { JsonExportDialog } from './components/JsonExportDialog'
 import { MeldPlanDialog } from './components/MeldPlanDialog'
+import { ScriptDialog } from './components/ScriptDialog'
 import { TableView, type Selection } from './components/TableView'
 import { Timeline } from './components/Timeline'
 import { readFileText, saveText } from './lib/files'
@@ -74,6 +78,7 @@ export function App() {
   const [meldPlanRequest, setMeldPlanRequest] = useState<Extract<EditRequest, { type: 'meld-add' }>>()
   const [justApplied, setJustApplied] = useState(false)
   const [pasteOpen, setPasteOpen] = useState(false)
+  const [scriptOpen, setScriptOpen] = useState(false)
   const [pasteValue, setPasteValue] = useState('')
   const [roundClipboard, setRoundClipboard] = useState<RawRound>()
   const [dragging, setDragging] = useState(false)
@@ -406,6 +411,44 @@ export function App() {
     }
   }
 
+  const executeScript = (input: string): string | undefined => {
+    if (!project || !state || !decodedRound) return '局面を読み込めません'
+    try {
+      const script = input
+        .trim()
+        .replace(/^```[^\r\n]*\r?\n?/, '')
+        .replace(/\s*```$/, '')
+      const result = executePaifuScript(project.current, script, {
+        round,
+        event,
+        self: analysisSeat ?? viewpoint,
+        lockedRefs: project.lockedRefs,
+        seed: project.seed,
+      })
+      let nextLocks = [...project.lockedRefs]
+      for (let index = 0; index < result.sceneCount; index += 1) {
+        nextLocks = shiftLockedRefsForInsert(nextLocks, round + 1 + index)
+      }
+      clearEditPipeline()
+      setCurrentProject(applyProjectLogChange(
+        project,
+        { type: 'script', round, script, scenes: result.sceneCount },
+        result.output,
+        nextLocks,
+        result.changes,
+      ))
+      setSelection(undefined)
+      setPlaying(false)
+      setScriptOpen(false)
+      setNotice(result.sceneCount
+        ? `${result.sceneCount}個の局面案を現在局の後へ追加しました`
+        : `${result.commandCount}個のスクリプト命令を適用しました`)
+      return undefined
+    } catch (caught) {
+      return caught instanceof Error ? caught.message : String(caught)
+    }
+  }
+
   const exportJsonFile = async (text = exportedJson, filename = 'edited-paifu.json') => {
     if (!project) return
     try {
@@ -476,6 +519,7 @@ export function App() {
         <nav className="file-actions" aria-label="ファイル操作">
           <button type="button" onClick={() => inputRef.current?.click()}><FolderOpen size={16} /> JSONを開く</button>
           <button type="button" onClick={() => setPasteOpen(true)}><Braces size={16} /> 貼り付け</button>
+          <button type="button" onClick={() => setScriptOpen(true)}><MessageSquareCode size={16} /> AI・スクリプト</button>
           <div className="action-menu">
             <button type="button"><Save size={16} /> 保存 <ChevronDown size={13} /></button>
             <div className="action-menu-popover">
@@ -651,6 +695,18 @@ export function App() {
             enqueueEdit(request)
             setMeldPlanRequest(undefined)
           }}
+        />
+      )}
+      {scriptOpen && (
+        <ScriptDialog
+          onClose={() => setScriptOpen(false)}
+          onBuildPrompt={(instruction) => buildAiEditPrompt({
+            instruction,
+            state,
+            self: analysisSeat ?? viewpoint,
+            eventCount: decodedRound.events.length,
+          })}
+          onExecute={executeScript}
         />
       )}
 

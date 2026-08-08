@@ -1958,6 +1958,201 @@ textarea:focus-visible {
   line-height: 1.55;
 }
 
+.script-dialog {
+  width: min(1080px, calc(100vw - 36px));
+  max-height: calc(100vh - 36px);
+  overflow: auto;
+  border: 1px solid #c6d0cb;
+  border-radius: 10px;
+  background: #f7f8f5;
+  box-shadow: 0 24px 70px rgb(12 42 35 / 30%);
+}
+
+.script-dialog > header {
+  display: flex;
+  position: sticky;
+  z-index: 2;
+  top: 0;
+  align-items: center;
+  justify-content: space-between;
+  padding: 17px 21px;
+  border-bottom: 1px solid #d5dcd8;
+  background: rgb(247 248 245 / 96%);
+  backdrop-filter: blur(8px);
+}
+
+.script-dialog h2 {
+  margin: 2px 0 0;
+  color: #183e34;
+  font-family: 'Yu Mincho', 'Hiragino Mincho ProN', serif;
+  font-size: 18px;
+}
+
+.script-dialog > header > button {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  color: #61716a;
+  cursor: pointer;
+}
+
+.script-dialog-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+
+.script-dialog-grid > section {
+  min-width: 0;
+  padding: 20px;
+}
+
+.script-dialog-grid > section + section {
+  border-left: 1px solid #d9dfdc;
+  background: #f1f4f1;
+}
+
+.script-section-title {
+  display: flex;
+  align-items: center;
+  margin-bottom: 18px;
+  color: #27604e;
+  gap: 10px;
+}
+
+.script-section-title strong,
+.script-section-title span {
+  display: block;
+}
+
+.script-section-title strong {
+  font-size: 12px;
+}
+
+.script-section-title span {
+  margin-top: 3px;
+  color: #6f7d77;
+  font-size: 9px;
+}
+
+.script-dialog label {
+  display: block;
+  margin-bottom: 6px;
+  color: #52645d;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.script-dialog textarea {
+  display: block;
+  width: 100%;
+  padding: 11px;
+  resize: vertical;
+  border: 1px solid #bdc9c3;
+  border-radius: 6px;
+  background: #fff;
+  color: #25362f;
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+.instruction-input {
+  min-height: 112px;
+  font-family: inherit;
+}
+
+.script-input {
+  min-height: 330px;
+  font-family: ui-monospace, 'Cascadia Mono', monospace;
+}
+
+.build-prompt-button,
+.run-script-button {
+  display: flex;
+  min-height: 38px;
+  align-items: center;
+  justify-content: center;
+  margin-top: 10px;
+  padding: 0 15px;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  gap: 7px;
+}
+
+.build-prompt-button {
+  width: 100%;
+}
+
+.run-script-button {
+  margin-left: auto;
+}
+
+.generated-prompt {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid #d5dcd8;
+}
+
+.generated-prompt > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 7px;
+  color: #38564a;
+  font-size: 10px;
+}
+
+.generated-prompt > div span {
+  color: #7a8882;
+  font-size: 8px;
+}
+
+.generated-prompt textarea {
+  min-height: 240px;
+  max-height: 330px;
+  font-family: ui-monospace, 'Cascadia Mono', monospace;
+  font-size: 9px;
+}
+
+.generated-prompt > button {
+  display: flex;
+  align-items: center;
+  margin: 9px 0 0 auto;
+  padding: 7px 10px;
+  border: 1px solid #b8c7c0;
+  border-radius: 5px;
+  background: #fff;
+  color: #335b4c;
+  font-size: 9px;
+  font-weight: 700;
+  cursor: pointer;
+  gap: 6px;
+}
+
+.script-safety-note {
+  margin-top: 11px;
+  padding: 9px 10px;
+  border-radius: 5px;
+  background: #e5eee9;
+  color: #557068;
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.script-error {
+  margin: 10px 0 0;
+  padding: 9px 10px;
+  border: 1px solid #e5c1bc;
+  border-radius: 5px;
+  background: #fff0ee;
+  color: #9d3a31;
+  font-size: 10px;
+}
+
 .json-export-dialog > p {
   margin: 15px 22px 9px;
   color: #65736d;
@@ -2281,6 +2476,15 @@ textarea:focus-visible {
   }
 
   .inspector {
+    border-left: 0;
+  }
+
+  .script-dialog-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .script-dialog-grid > section + section {
+    border-top: 1px solid #d9dfdc;
     border-left: 0;
   }
 }
