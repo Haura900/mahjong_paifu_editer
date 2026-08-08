@@ -34,10 +34,11 @@ MELD_ADD SHIMO PON 6z FROM SELF RIVER 7
 MELD_ADD SHIMO CHI 2s 3s 4s FROM SELF RIVER 9
 MELD_REMOVE SHIMO 1
 REACH TOIMEN ON AT 8
+REACH KAMI ON BEFORE SELF RIVER 10
 REACH TOIMEN OFF
 `)
     expect(parsed.actions.map((action) => action.kind)).toEqual([
-      'meld-add', 'meld-add', 'meld-remove', 'reach', 'reach',
+      'meld-add', 'meld-add', 'meld-remove', 'reach', 'reach', 'reach',
     ])
   })
 
@@ -111,6 +112,23 @@ END
     expect(result.changes.some((change) => change.reason.includes('聴牌形へ補正'))).toBe(true)
   }, 30_000)
 
+  it('places reach on the last actor discard before the decision tile', () => {
+    const round = decodeMatch(sample).rounds[0]!
+    const result = executePaifuScript(sample, 'KEEP_ONLY\nREACH KAMI ON BEFORE SELF RIVER 10', {
+      round: 0,
+      event: round.events.length - 1,
+      self: 0,
+      seed: 20260808,
+    })
+
+    const final = decodeMatch(result.output).rounds[0]!.snapshots.at(-1)!
+    const decision = final.rivers[0]![9]!
+    const reachDiscard = final.rivers[3]!.find((discard) => discard.reach)
+    expect(reachDiscard).toBeDefined()
+    expect(reachDiscard!.eventIndex).toBeLessThan(decision.eventIndex)
+    expect(final.rivers[3]!.filter((discard) => discard.eventIndex < decision.eventIndex).at(-1)?.reach).toBe(true)
+  }, 30_000)
+
   it('adds and removes an opponents pon from text', () => {
     const round = decodeMatch(sample).rounds[0]!
     const final = round.snapshots.at(-1)!
@@ -172,8 +190,12 @@ describe('AI editing prompt', () => {
     expect(prompt).toContain('KEEP_ONLY                         現在局以外を削除する')
     expect(prompt).toContain('聴牌確率 × その牌が当たり牌である確率 × 放銃時の打点')
     expect(prompt).toContain('単に相手手牌へ対象牌や隣接牌を入れただけでは')
-    expect(prompt).toContain('相手手牌のSETだけに頼らず')
-    expect(prompt).toContain('自分から見える情報を必ず変える')
+    expect(prompt).toContain('SET <席> HAND は仕様として残しているが、AI生成では原則使用禁止')
+    expect(prompt).toContain('危険度を変えるシーンではHANDを使わず')
+    expect(prompt).toContain('REACHとMELD_ADDは必要な聴牌形・手牌を実行時に自動補正')
+    expect(prompt).toContain('REACH <席> ON BEFORE SELF RIVER <対象巡目>')
+    expect(prompt).toContain('SELF RIVER 10 9s(9索)')
+    expect(prompt).toContain('REACH <相手席> ON BEFORE SELF RIVER 10')
     expect(prompt).toContain('下家のチー・ポン有無を優先的な比較軸')
     expect(prompt).toContain('MELD_ADD / MELD_REMOVE')
     expect(prompt).toContain('REACH <席> ON')

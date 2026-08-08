@@ -19,7 +19,7 @@ export const PAIFU_SCRIPT_SPEC = `牌譜編集スクリプト v1
 - 席は SELF / SHIMO / TOIMEN / KAMI（自分・下家・対面・上家）、または EAST / SOUTH / WEST / NORTH。
 - 巡目・位置番号は1始まり。
 - SET <席> RIVER <巡目> <牌>       河の牌を差し替える。
-- SET <席> HAND <位置> <牌>        現在表示中の手牌を差し替える。
+- SET <席> HAND <位置> <牌>        現在表示中の手牌を差し替える。仕様として使用可能だが、AI生成では原則使用禁止。
 - SET <席> DRAW <巡目> <牌>        指定席のツモ列を差し替える。
 - SET DORA <位置> <牌>             ドラ表示牌を差し替える。
 - SET URA <位置> <牌>              裏ドラ表示牌を差し替える。
@@ -29,7 +29,9 @@ export const PAIFU_SCRIPT_SPEC = `牌譜編集スクリプト v1
 - MELD_ADD <席> CHI <牌1> <牌2> <牌3> FROM <捨てた席> RIVER <巡目>
                                       指定河牌を鳴いてチーを追加する。チーは上家からのみ。
 - MELD_REMOVE <席> <副露番号>      表示中の副露を1始まりの番号で解除する。
-- REACH <席> ON [AT <巡目>]        リーチを追加する。非聴牌ならその地点の門前手を聴牌形へ自動補正する。
+- REACH <席> ON BEFORE <基準席> RIVER <巡目>
+                                      基準打牌より前にある指定席の最後の打牌でリーチする。打牌判断用の局面ではこちらを優先する。
+- REACH <席> ON [AT <巡目>]        リーチを追加する。ATはリーチ者自身の河巡目。非聴牌ならその地点で自動聴牌補正する。
 - REACH <席> OFF                   その席のリーチを解除する。
 - SCENE "名前" ～ END              現在局を元に独立した案を作り、現在局の直後へ追加する。
 - SCENE内で失敗した案はその案だけを破棄してエラーを表示し、後続のSCENEは続けて実行する。
@@ -95,6 +97,7 @@ interface ReachAction {
   actor: string
   enabled: boolean
   turn?: number
+  before?: PlayerLocation
   line: number
 }
 
@@ -264,14 +267,25 @@ export function parsePaifuScript(input: string): ParsedPaifuScript {
         const mode = tokens[2]?.toUpperCase()
         if (!actor || (mode !== 'ON' && mode !== 'OFF')) scriptError(line, 'REACHは席と ON / OFF を指定してください')
         if (mode === 'OFF' && tokens.length !== 3) scriptError(line, 'REACH OFFには巡目を指定しません')
-        if (mode === 'ON' && tokens.length !== 3 && (tokens.length !== 5 || tokens[3]?.toUpperCase() !== 'AT')) {
-          scriptError(line, 'REACH ONの巡目は AT <巡目> で指定してください')
+        const at = mode === 'ON' && tokens.length === 5 && tokens[3]?.toUpperCase() === 'AT'
+        const before = mode === 'ON'
+          && tokens.length === 7
+          && tokens[3]?.toUpperCase() === 'BEFORE'
+          && tokens[5]?.toUpperCase() === 'RIVER'
+        if (mode === 'ON' && tokens.length !== 3 && !at && !before) {
+          scriptError(line, 'REACH ONは AT <巡目> または BEFORE <基準席> RIVER <巡目> で指定してください')
         }
         target.push({
           kind: 'reach',
           actor,
           enabled: mode === 'ON',
-          turn: tokens.length === 5 ? parseIndex(tokens[4], line) : undefined,
+          turn: at ? parseIndex(tokens[4], line) : undefined,
+          before: before ? {
+            kind: 'player',
+            seat: tokens[4]!.toUpperCase(),
+            area: 'river',
+            index: parseIndex(tokens[6], line),
+          } : undefined,
           line,
         })
       } else {
@@ -395,6 +409,9 @@ function executeActions(
         kind: 'player', seat: action.actor, area: 'river', index: action.turn,
       })]
     }
+    if (action.kind === 'reach' && action.before) {
+      return [locationRef(input, round, event, self, action.before)]
+    }
     return []
   })
   let output = structuredClone(input)
@@ -460,7 +477,19 @@ function executeActions(
       } else {
         const actor = resolveSeat(action.actor, self)
         let reachEvent = Math.min(event, decodeMatch(output).rounds[round]!.events.length - 1)
-        if (action.turn) {
+        if (action.before) {
+          const decisionSeat = resolveSeat(action.before.seat, self)
+          const decisionRef = refs[index]![0]!
+          const state = decodeMatch(output).rounds[round]!.snapshots.at(-1)!
+          const decision = state.rivers[decisionSeat]!.find((item) =>
+            refKey(state.tiles[item.tileId]!.acquisitionRef) === refKey(decisionRef))
+          if (!decision) throw new Error('基準打牌の巡目を追跡できません')
+          const priorDiscard = state.rivers[actor]!
+            .filter((item) => item.eventIndex < decision.eventIndex)
+            .at(-1)
+          if (!priorDiscard) throw new Error(`${action.actor}には基準打牌より前のリーチ宣言牌がありません`)
+          reachEvent = priorDiscard.eventIndex
+        } else if (action.turn) {
           const reachRef = refs[index]![0]!
           const state = decodeMatch(output).rounds[round]!.snapshots.at(-1)!
           const river = state.rivers[actor]!.find((item) =>
