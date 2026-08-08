@@ -426,8 +426,9 @@ export function App() {
         seed: project.seed,
       })
       let nextLocks = [...project.lockedRefs]
+      if (result.keepOnly) nextLocks = lockedRefsForSingleRound(nextLocks, round)
       for (let index = 0; index < result.sceneCount; index += 1) {
-        nextLocks = shiftLockedRefsForInsert(nextLocks, round + 1 + index)
+        nextLocks = shiftLockedRefsForInsert(nextLocks, (result.keepOnly ? 0 : round) + 1 + index)
       }
       clearEditPipeline()
       setCurrentProject(applyProjectLogChange(
@@ -439,9 +440,13 @@ export function App() {
       ))
       setSelection(undefined)
       setPlaying(false)
+      if (result.keepOnly) {
+        setRound(0)
+        setEvent(0)
+      }
       setScriptOpen(false)
       setNotice(result.sceneCount
-        ? `${result.sceneCount}個の局面案を現在局の後へ追加しました`
+        ? `${result.sceneCount}個の局面案を${result.keepOnly ? '残した現在局' : '現在局'}の後へ追加しました`
         : `${result.commandCount}個のスクリプト命令を適用しました`)
       return undefined
     } catch (caught) {

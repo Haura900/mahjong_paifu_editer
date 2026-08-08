@@ -92,7 +92,7 @@ export function ScriptDialog({
               className="script-input"
               value={script}
               onChange={(change) => setScript(change.target.value)}
-              placeholder={'SCENE "上家の4pを10巡目へ"\nSET KAMI RIVER 7 1z\nSET KAMI RIVER 10 4p\nEND'}
+              placeholder={'KEEP_ONLY\nSCENE "上家の4pを10巡目へ"\nSET KAMI RIVER 7 1z\nSET KAMI RIVER 10 4p\nEND'}
             />
             {error && <p className="script-error" role="alert">{error}</p>}
             <div className="script-safety-note">実行結果は1回の変更として記録され、「元に戻す」でまとめて取り消せます。</div>

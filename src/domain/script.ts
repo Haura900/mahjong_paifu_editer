@@ -14,6 +14,7 @@ import type {
 
 export const PAIFU_SCRIPT_SPEC = `牌譜編集スクリプト v1
 - 1行に1命令。空行と # から始まるコメントは無視する。
+- KEEP_ONLY                         現在局以外を削除する。使う場合は必ずスクリプトの先頭に置く。
 - 牌は 1m-9m / 1p-9p / 1s-9s / 1z-7z。赤5は 0m / 0p / 0s。
 - 席は SELF / SHIMO / TOIMEN / KAMI（自分・下家・対面・上家）、または EAST / SOUTH / WEST / NORTH。
 - 巡目・位置番号は1始まり。
@@ -27,6 +28,7 @@ export const PAIFU_SCRIPT_SPEC = `牌譜編集スクリプト v1
 - SCENE外の命令は現在局そのものへ適用する。SCENEは最大20個、命令は全体で最大200個。
 
 例:
+KEEP_ONLY
 SCENE "上家の4pを10巡目へ"
 SET KAMI RIVER 7 1z
 SET KAMI RIVER 10 4p
@@ -72,6 +74,7 @@ interface Scene {
 }
 
 export interface ParsedPaifuScript {
+  keepOnly: boolean
   actions: ScriptAction[]
   scenes: Scene[]
 }
@@ -81,6 +84,7 @@ export interface ScriptExecutionResult {
   changes: AutoChange[]
   sceneCount: number
   commandCount: number
+  keepOnly: boolean
 }
 
 function scriptError(line: number, message: string): never {
@@ -119,7 +123,7 @@ function fromScriptTile(value: string): TileCode | undefined {
 }
 
 export function parsePaifuScript(input: string): ParsedPaifuScript {
-  const result: ParsedPaifuScript = { actions: [], scenes: [] }
+  const result: ParsedPaifuScript = { keepOnly: false, actions: [], scenes: [] }
   let current: Scene | undefined
   let commandCount = 0
 
@@ -127,6 +131,14 @@ export function parsePaifuScript(input: string): ParsedPaifuScript {
     const line = offset + 1
     const source = rawLine.trim()
     if (!source || source.startsWith('#')) return
+    if (/^KEEP_ONLY$/i.test(source)) {
+      if (current) scriptError(line, 'KEEP_ONLYはSCENEの外に置いてください')
+      if (result.keepOnly) scriptError(line, 'KEEP_ONLYは1回だけ指定できます')
+      if (commandCount || result.scenes.length) scriptError(line, 'KEEP_ONLYはスクリプトの先頭に置いてください')
+      result.keepOnly = true
+      commandCount += 1
+      return
+    }
     if (/^SCENE\b/i.test(source)) {
       if (current) scriptError(line, 'SCENEの中にSCENEは作れません')
       const match = source.match(/^SCENE\s+(?:"([^"]+)"|'([^']+)'|(.+))$/i)
@@ -168,7 +180,7 @@ export function parsePaifuScript(input: string): ParsedPaifuScript {
   })
 
   if (current) throw new Error(`SCENE「${current.name}」のENDがありません`)
-  if (!result.actions.length && !result.scenes.length) throw new Error('実行する命令がありません')
+  if (!result.keepOnly && !result.actions.length && !result.scenes.length) throw new Error('実行する命令がありません')
   return result
 }
 
@@ -307,17 +319,27 @@ export function executePaifuScript(
 ): ScriptExecutionResult {
   const parsed = parsePaifuScript(script)
   const seed = options.seed ?? 20260726
-  let output = structuredClone(input)
+  let output = parsed.keepOnly ? singleRoundLog(input, options.round) : structuredClone(input)
+  const activeRound = parsed.keepOnly ? 0 : options.round
+  const activeLocks = parsed.keepOnly
+    ? [...(options.lockedRefs ?? [])].flatMap((key) => {
+        const score = key.match(/^score:(\d+):(\d+)$/)
+        if (score) return Number(score[1]) === options.round ? [`score:0:${score[2]}`] : []
+        const raw = key.match(/^(\d+):(deal|draw|discard|dora|ura):(.*)$/)
+        if (raw) return Number(raw[1]) === options.round ? [`0:${raw[2]}:${raw[3]}`] : []
+        return [key]
+      })
+    : options.lockedRefs ?? []
   const changes: AutoChange[] = []
 
   if (parsed.actions.length) {
     const applied = executeActions(
       output,
-      options.round,
+      activeRound,
       options.event,
       options.self,
       parsed.actions,
-      options.lockedRefs ?? [],
+      activeLocks,
       seed,
     )
     output = applied.output
@@ -328,18 +350,19 @@ export function executePaifuScript(
   parsed.scenes.forEach((scene, sceneIndex) => {
     const source = singleRoundLog(input, options.round)
     const applied = executeActions(source, 0, options.event, options.self, scene.actions, [], seed + sceneIndex)
-    const insertedRound = options.round + 1 + sceneIndex
+    const insertedRound = activeRound + 1 + sceneIndex
     inserted.push(structuredClone(applied.output.log[0]!))
     changes.push(...applied.changes.map((change) => moveChangeRound(change, insertedRound)))
   })
-  if (inserted.length) output.log.splice(options.round + 1, 0, ...inserted)
+  if (inserted.length) output.log.splice(activeRound + 1, 0, ...inserted)
   output = parseTenhouLog(output)
 
   return {
     output,
     changes,
     sceneCount: parsed.scenes.length,
-    commandCount: parsed.actions.length + parsed.scenes.reduce((sum, scene) => sum + scene.actions.length, 0),
+    commandCount: Number(parsed.keepOnly) + parsed.actions.length + parsed.scenes.reduce((sum, scene) => sum + scene.actions.length, 0),
+    keepOnly: parsed.keepOnly,
   }
 }
 

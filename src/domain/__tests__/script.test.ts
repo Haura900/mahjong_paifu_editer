@@ -12,6 +12,7 @@ describe('paifu text script', () => {
   it('parses independent scenes and relative river edits', () => {
     const parsed = parsePaifuScript(`
 # two alternatives
+KEEP_ONLY
 SCENE "10巡目案"
 SET KAMI RIVER 7 1z
 SET KAMI RIVER 10 4p
@@ -22,6 +23,7 @@ SET KAMI RIVER 14 4p
 END
 `)
     expect(parsed.actions).toHaveLength(0)
+    expect(parsed.keepOnly).toBe(true)
     expect(parsed.scenes).toHaveLength(2)
     expect(parsed.scenes[0]?.actions).toHaveLength(2)
   })
@@ -34,6 +36,7 @@ END
     expect(final.rivers[kami]!.length).toBeGreaterThanOrEqual(14)
 
     const result = executePaifuScript(sample, `
+KEEP_ONLY
 SCENE "10巡目案"
 SET KAMI RIVER 7 1z
 SET KAMI RIVER 10 4p
@@ -45,7 +48,8 @@ END
 `, { round: 0, event: source.events.length - 1, self: 0, seed: 20260726 })
 
     expect(result.sceneCount).toBe(2)
-    expect(result.output.log).toHaveLength(sample.log.length + 2)
+    expect(result.keepOnly).toBe(true)
+    expect(result.output.log).toHaveLength(3)
     const scenes = decodeMatch(result.output).rounds
     expect(scenes[1]!.snapshots.at(-1)!.rivers[kami]![9]!.code).toBe(24)
     expect(scenes[2]!.snapshots.at(-1)!.rivers[kami]![13]!.code).toBe(24)
@@ -64,6 +68,8 @@ describe('AI editing prompt', () => {
     sample.name.forEach((name) => expect(prompt).toContain(name))
     expect(prompt).toContain('# 余っている字牌')
     expect(prompt).toContain('差替え用の牌が必要なら')
+    expect(prompt).toContain('スクリプトの先頭行を必ず KEEP_ONLY')
+    expect(prompt).toContain('KEEP_ONLY                         現在局以外を削除する')
     expect(prompt).toContain('SET <席> RIVER <巡目> <牌>')
     expect(prompt).toContain('SCENE "名前" ～ END')
     expect(prompt).toContain('- 手牌:')
