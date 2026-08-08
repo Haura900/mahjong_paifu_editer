@@ -1,7 +1,7 @@
 import { parseTenhouLog, refKey } from './codec'
 import { decodeMatch, snapshotAt } from './replay'
 import { solveEdit } from './solver'
-import { fromMajiangTile, tileLabel, toMajiangTile } from './tile'
+import { fromMajiangTile, sameTileKind, tileLabel, toMajiangTile } from './tile'
 import type {
   AutoChange,
   RawRef,
@@ -24,6 +24,13 @@ export const PAIFU_SCRIPT_SPEC = `牌譜編集スクリプト v1
 - SET DORA <位置> <牌>             ドラ表示牌を差し替える。
 - SET URA <位置> <牌>              裏ドラ表示牌を差し替える。
 - SWAP <場所> WITH <場所>          2つの物理牌を交換する。場所の書式はSETの牌より前と同じ。
+- MELD_ADD <席> PON <牌> FROM <捨てた席> RIVER <巡目>
+                                      指定河牌を鳴いてポンを追加する。必要な対子は自動補正する。
+- MELD_ADD <席> CHI <牌1> <牌2> <牌3> FROM <捨てた席> RIVER <巡目>
+                                      指定河牌を鳴いてチーを追加する。チーは上家からのみ。
+- MELD_REMOVE <席> <副露番号>      表示中の副露を1始まりの番号で解除する。
+- REACH <席> ON [AT <巡目>]        リーチを追加する。非聴牌ならその地点の門前手を聴牌形へ自動補正する。
+- REACH <席> OFF                   その席のリーチを解除する。
 - SCENE "名前" ～ END              現在局を元に独立した案を作り、現在局の直後へ追加する。
 - SCENE外の命令は現在局そのものへ適用する。SCENEは最大20個、命令は全体で最大200個。
 
@@ -66,7 +73,31 @@ interface SwapAction {
   line: number
 }
 
-type ScriptAction = SetAction | SwapAction
+interface MeldAddAction {
+  kind: 'meld-add'
+  actor: string
+  meldType: 'chi' | 'pon'
+  codes: TileCode[]
+  source: PlayerLocation
+  line: number
+}
+
+interface MeldRemoveAction {
+  kind: 'meld-remove'
+  actor: string
+  index: number
+  line: number
+}
+
+interface ReachAction {
+  kind: 'reach'
+  actor: string
+  enabled: boolean
+  turn?: number
+  line: number
+}
+
+type ScriptAction = SetAction | SwapAction | MeldAddAction | MeldRemoveAction | ReachAction
 
 interface Scene {
   name: string
@@ -172,6 +203,63 @@ export function parsePaifuScript(input: string): ParsedPaifuScript {
       const second = parseLocation(tokens.slice(withIndex + 1), line)
       if (tokens.length !== withIndex + second.consumed + 1) scriptError(line, 'SWAP命令の末尾に余分な値があります')
       target.push({ kind: 'swap', first: first.location, second: second.location, line })
+    } else if (tokens[0]?.toUpperCase() === 'MELD_ADD') {
+      const actor = tokens[1]?.toUpperCase()
+      const meldType = tokens[2]?.toLowerCase()
+      if (!actor || (meldType !== 'chi' && meldType !== 'pon')) {
+        scriptError(line, 'MELD_ADDは席と CHI / PON を指定してください')
+      }
+      const tileCount = meldType === 'chi' ? 3 : 1
+      const codeTokens = tokens.slice(3, 3 + tileCount)
+      const codes = codeTokens.map(fromScriptTile)
+      if (codes.length !== tileCount || codes.some((code) => !code)) {
+        scriptError(line, 'MELD_ADDの牌を認識できません')
+      }
+      const from = 3 + tileCount
+      if (tokens[from]?.toUpperCase() !== 'FROM' || tokens[from + 2]?.toUpperCase() !== 'RIVER') {
+        scriptError(line, 'MELD_ADDは FROM <席> RIVER <巡目> で鳴く河牌を指定してください')
+      }
+      if (tokens.length !== from + 4) scriptError(line, 'MELD_ADD命令の末尾に余分な値があります')
+      const parsedCodes = codes as TileCode[]
+      const meldCodes = meldType === 'pon'
+        ? Array<TileCode>(3).fill(parsedCodes[0]!)
+        : parsedCodes
+      target.push({
+        kind: 'meld-add',
+        actor,
+        meldType,
+        codes: meldCodes,
+        source: {
+          kind: 'player',
+          seat: tokens[from + 1]!.toUpperCase(),
+          area: 'river',
+          index: parseIndex(tokens[from + 3], line),
+        },
+        line,
+      })
+    } else if (tokens[0]?.toUpperCase() === 'MELD_REMOVE') {
+      if (tokens.length !== 3 || !tokens[1]) scriptError(line, 'MELD_REMOVEは席と副露番号を指定してください')
+      target.push({
+        kind: 'meld-remove',
+        actor: tokens[1]!.toUpperCase(),
+        index: parseIndex(tokens[2], line),
+        line,
+      })
+    } else if (tokens[0]?.toUpperCase() === 'REACH') {
+      const actor = tokens[1]?.toUpperCase()
+      const mode = tokens[2]?.toUpperCase()
+      if (!actor || (mode !== 'ON' && mode !== 'OFF')) scriptError(line, 'REACHは席と ON / OFF を指定してください')
+      if (mode === 'OFF' && tokens.length !== 3) scriptError(line, 'REACH OFFには巡目を指定しません')
+      if (mode === 'ON' && tokens.length !== 3 && (tokens.length !== 5 || tokens[3]?.toUpperCase() !== 'AT')) {
+        scriptError(line, 'REACH ONの巡目は AT <巡目> で指定してください')
+      }
+      target.push({
+        kind: 'reach',
+        actor,
+        enabled: mode === 'ON',
+        turn: tokens.length === 5 ? parseIndex(tokens[4], line) : undefined,
+        line,
+      })
     } else {
       scriptError(line, `命令「${tokens[0]}」を認識できません`)
     }
@@ -232,6 +320,17 @@ function codeAtRef(log: TenhouLog, round: number, ref: RawRef): TileCode {
   return trace.code
 }
 
+function solveScriptEdit(
+  log: TenhouLog,
+  request: Parameters<typeof solveEdit>[1],
+  lockedRefs: Iterable<string>,
+  seed: number,
+): { output: TenhouLog; changes: AutoChange[] } {
+  const result = solveEdit(log, request, { lockedRefs, seed })
+  if (!result.ok || !result.output) throw new Error(result.conflict ?? '牌譜編集を適用できません')
+  return { output: result.output, changes: result.changes }
+}
+
 function applySet(
   log: TenhouLog,
   round: number,
@@ -266,12 +365,20 @@ function executeActions(
   lockedRefs: Iterable<string>,
   seed: number,
 ): { output: TenhouLog; changes: AutoChange[] } {
-  const refs = actions.map((action) => action.kind === 'set'
-    ? [locationRef(input, round, event, self, action.location)]
-    : [
-        locationRef(input, round, event, self, action.first),
-        locationRef(input, round, event, self, action.second),
-      ])
+  const refs = actions.map((action) => {
+    if (action.kind === 'set') return [locationRef(input, round, event, self, action.location)]
+    if (action.kind === 'swap') return [
+      locationRef(input, round, event, self, action.first),
+      locationRef(input, round, event, self, action.second),
+    ]
+    if (action.kind === 'meld-add') return [locationRef(input, round, event, self, action.source)]
+    if (action.kind === 'reach' && action.turn) {
+      return [locationRef(input, round, event, self, {
+        kind: 'player', seat: action.actor, area: 'river', index: action.turn,
+      })]
+    }
+    return []
+  })
   let output = structuredClone(input)
   const changes: AutoChange[] = []
 
@@ -281,7 +388,7 @@ function executeActions(
         const result = applySet(output, round, event, refs[index]![0]!, action.code, lockedRefs, seed)
         output = result.output
         changes.push(...result.changes)
-      } else {
+      } else if (action.kind === 'swap') {
         const [first, second] = refs[index]!
         const firstCode = codeAtRef(input, round, first!)
         const secondCode = codeAtRef(input, round, second!)
@@ -289,6 +396,63 @@ function executeActions(
         output = result.output
         changes.push(...result.changes)
         result = applySet(output, round, event, second!, firstCode, lockedRefs, seed)
+        output = result.output
+        changes.push(...result.changes)
+      } else if (action.kind === 'meld-add') {
+        const actor = resolveSeat(action.actor, self)
+        const target = resolveSeat(action.source.seat, self)
+        if (actor === target) throw new Error('自分の河牌を鳴くことはできません')
+        if (action.meldType === 'chi' && target !== ((actor + 3) % 4)) {
+          throw new Error('チーできるのは上家の河牌だけです')
+        }
+        const sourceRef = refs[index]![0]!
+        const state = decodeMatch(output).rounds[round]!.snapshots.at(-1)!
+        const sourceRiver = state.rivers[target]!.find((river) => {
+          const trace = state.tiles[river.tileId]!
+          return refKey(trace.acquisitionRef) === refKey(sourceRef)
+        })
+        if (!sourceRiver) throw new Error('鳴く河牌を追跡できません')
+        const calledIndex = action.codes.findIndex((code) => sameTileKind(code, sourceRiver.code))
+        if (calledIndex < 0) throw new Error('指定した副露形に、鳴く河牌と同じ牌が含まれていません')
+        const result = solveScriptEdit(output, {
+          type: 'meld-add',
+          round,
+          event: sourceRiver.eventIndex,
+          actor,
+          meldType: action.meldType,
+          forced: { codes: action.codes, calledIndex, target },
+        }, lockedRefs, seed)
+        output = result.output
+        changes.push(...result.changes)
+      } else if (action.kind === 'meld-remove') {
+        const actor = resolveSeat(action.actor, self)
+        const decodedRound = decodeMatch(output).rounds[round]!
+        const state = decodedRound.snapshots.at(-1)!
+        const meld = state.melds[actor]![action.index - 1]
+        if (!meld) throw new Error(`${action.actor}の副露${action.index}がありません`)
+        const result = solveScriptEdit(output, {
+          type: 'meld-remove',
+          round,
+          event: decodedRound.events.length - 1,
+          actor,
+          meldId: meld.id,
+        }, lockedRefs, seed)
+        output = result.output
+        changes.push(...result.changes)
+      } else {
+        const actor = resolveSeat(action.actor, self)
+        let reachEvent = Math.min(event, decodeMatch(output).rounds[round]!.events.length - 1)
+        if (action.turn) {
+          const reachRef = refs[index]![0]!
+          const state = decodeMatch(output).rounds[round]!.snapshots.at(-1)!
+          const river = state.rivers[actor]!.find((item) =>
+            refKey(state.tiles[item.tileId]!.acquisitionRef) === refKey(reachRef))
+          if (!river) throw new Error('リーチ宣言牌の巡目を追跡できません')
+          reachEvent = river.eventIndex
+        }
+        const result = solveScriptEdit(output, {
+          type: 'reach', round, event: reachEvent, actor, enabled: action.enabled,
+        }, lockedRefs, seed)
         output = result.output
         changes.push(...result.changes)
       }

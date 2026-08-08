@@ -28,6 +28,19 @@ END
     expect(parsed.scenes[0]?.actions).toHaveLength(2)
   })
 
+  it('parses meld and reach operations', () => {
+    const parsed = parsePaifuScript(`
+MELD_ADD SHIMO PON 6z FROM SELF RIVER 7
+MELD_ADD SHIMO CHI 2s 3s 4s FROM SELF RIVER 9
+MELD_REMOVE SHIMO 1
+REACH TOIMEN ON AT 8
+REACH TOIMEN OFF
+`)
+    expect(parsed.actions.map((action) => action.kind)).toEqual([
+      'meld-add', 'meld-add', 'meld-remove', 'reach', 'reach',
+    ])
+  })
+
   it('creates each scene from the unedited current round', () => {
     const decoded = decodeMatch(sample)
     const source = decoded.rounds[0]!
@@ -55,6 +68,66 @@ END
     expect(scenes[2]!.snapshots.at(-1)!.rivers[kami]![13]!.code).toBe(24)
     expect(result.changes.length).toBeGreaterThan(0)
   }, 30_000)
+
+  it('enables reach from text and forces the selected hand into tenpai', () => {
+    const round = decodeMatch(sample).rounds[0]!
+    const result = executePaifuScript(sample, 'KEEP_ONLY\nREACH SELF ON AT 1', {
+      round: 0,
+      event: round.events.length - 1,
+      self: 0,
+      seed: 20260808,
+    })
+
+    expect(result.output.log).toHaveLength(1)
+    const after = decodeMatch(result.output).rounds[0]!
+    expect(after.snapshots.at(-1)!.reach[0]).toBe(true)
+    expect(result.changes.some((change) => change.reason.includes('聴牌形へ補正'))).toBe(true)
+  }, 30_000)
+
+  it('adds and removes an opponents pon from text', () => {
+    const round = decodeMatch(sample).rounds[0]!
+    const final = round.snapshots.at(-1)!
+    const source = final.rivers[0]!.find((river) => !river.called && river.code < 50)!
+    const turn = final.rivers[0]!.indexOf(source) + 1
+    const code = `${source.code % 10}${['', 'm', 'p', 's', 'z'][Math.floor(source.code / 10)]}`
+    const added = executePaifuScript(sample, `MELD_ADD SHIMO PON ${code} FROM SELF RIVER ${turn}`, {
+      round: 0,
+      event: round.events.length - 1,
+      self: 0,
+      seed: 20260808,
+    })
+    const addedRound = decodeMatch(added.output).rounds[0]!
+    const addedMelds = addedRound.snapshots.at(-1)!.melds[1]!
+    expect(addedMelds.some((meld) => meld.type === 'pon')).toBe(true)
+
+    const ponIndex = addedMelds.findIndex((meld) => meld.type === 'pon') + 1
+    const removed = executePaifuScript(added.output, `MELD_REMOVE SHIMO ${ponIndex}`, {
+      round: 0,
+      event: addedRound.events.length - 1,
+      self: 0,
+      seed: 20260808,
+    })
+    expect(decodeMatch(removed.output).rounds[0]!.snapshots.at(-1)!.melds[1]!.length)
+      .toBe(addedMelds.length - 1)
+  }, 40_000)
+
+  it('adds a chi from the actors upper player river', () => {
+    const round = decodeMatch(sample).rounds[0]!
+    const final = round.snapshots.at(-1)!
+    const source = final.rivers[0]!.find((river) => !river.called && river.code < 40)!
+    const turn = final.rivers[0]!.indexOf(source) + 1
+    const suit = ['m', 'p', 's'][Math.floor(source.code / 10) - 1]!
+    const rank = source.code % 10
+    const start = Math.max(1, Math.min(7, rank - 1))
+    const sequence = [start, start + 1, start + 2].map((value) => `${value}${suit}`).join(' ')
+    const result = executePaifuScript(
+      sample,
+      `MELD_ADD SHIMO CHI ${sequence} FROM SELF RIVER ${turn}`,
+      { round: 0, event: round.events.length - 1, self: 0, seed: 20260808 },
+    )
+    expect(decodeMatch(result.output).rounds[0]!.snapshots.at(-1)!.melds[1]!.some((meld) =>
+      meld.type === 'chi')).toBe(true)
+  }, 30_000)
 })
 
 describe('AI editing prompt', () => {
@@ -70,6 +143,13 @@ describe('AI editing prompt', () => {
     expect(prompt).toContain('差替え用の牌が必要なら')
     expect(prompt).toContain('スクリプトの先頭行を必ず KEEP_ONLY')
     expect(prompt).toContain('KEEP_ONLY                         現在局以外を削除する')
+    expect(prompt).toContain('聴牌確率 × その牌が当たり牌である確率 × 放銃時の打点')
+    expect(prompt).toContain('単に相手手牌へ対象牌や隣接牌を入れただけでは')
+    expect(prompt).toContain('相手手牌のSETだけに頼らず')
+    expect(prompt).toContain('自分から見える情報を必ず変える')
+    expect(prompt).toContain('下家のチー・ポン有無を優先的な比較軸')
+    expect(prompt).toContain('MELD_ADD / MELD_REMOVE')
+    expect(prompt).toContain('REACH <席> ON')
     expect(prompt).toContain('SET <席> RIVER <巡目> <牌>')
     expect(prompt).toContain('SCENE "名前" ～ END')
     expect(prompt).toContain('- 手牌:')

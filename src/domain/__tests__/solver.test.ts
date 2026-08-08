@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { cloneLog, getRoundSection, parseMeldString, refKey, writeRawRef } from '../codec'
-import { winningTiles } from '../hand'
+import { isTenpai, winningTiles } from '../hand'
 import {
   applyProjectEdit,
   createProject,
@@ -711,6 +711,49 @@ describe('deterministic automatic correction solver', () => {
     expect(result.changes.some((change) => change.reason.includes('牌山を補完'))).toBe(true)
     expect(result.output!.log.slice(round + 1).map((item) => [item[0], item[1]])).toEqual(laterRoundStarts)
     expect(result.changes.some((change) => change.kind === 'propagation')).toBe(false)
+    expectPlayable(result.output!)
+  }, 20_000)
+
+  it('forces a non-tenpai closed hand into tenpai when reach is enabled', () => {
+    const before = replayRound(sample, 0)
+    const declaration = before.events.find((event) => event.type === 'discard' && event.actor === 0)!
+    const beforeState = before.snapshots[declaration.index]!
+    const beforeCodes = beforeState.hands[0]!.map((id) => beforeState.tiles[id]!.code)
+    expect(isTenpai(beforeCodes)).toBe(false)
+
+    const result = solveEdit(sample, {
+      type: 'reach',
+      round: 0,
+      event: declaration.index,
+      actor: 0,
+      enabled: true,
+    }, { seed: 20260808 })
+
+    expect(result.ok, result.conflict).toBe(true)
+    expect(result.changes.some((change) => change.reason.includes('聴牌形へ補正'))).toBe(true)
+    const after = replayRound(result.output!, 0)
+    const accepted = after.events.find((event) => event.type === 'reach-accepted' && event.actor === 0)!
+    const afterState = after.snapshots[accepted.index]!
+    const afterCodes = afterState.hands[0]!.map((id) => afterState.tiles[id]!.code)
+    expect(isTenpai(afterCodes)).toBe(true)
+    expectPlayable(result.output!)
+  }, 30_000)
+
+  it('removes an existing reach declaration from a later displayed event', () => {
+    const round = replayRound(sample, 4)
+    const accepted = round.events.find((event) => event.type === 'reach-accepted')!
+    const actor = accepted.actor!
+    const result = solveEdit(sample, {
+      type: 'reach',
+      round: 4,
+      event: round.events.length - 1,
+      actor,
+      enabled: false,
+    })
+
+    expect(result.ok, result.conflict).toBe(true)
+    expect(getRoundSection(result.output!.log[4]!, 'discard', actor).some((item) =>
+      typeof item === 'string' && item.startsWith('r'))).toBe(false)
     expectPlayable(result.output!)
   }, 20_000)
 

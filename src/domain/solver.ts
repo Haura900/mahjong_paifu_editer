@@ -7,12 +7,13 @@ import {
   refKey,
   writeRawRef,
 } from './codec'
-import { isTenpai } from './hand'
+import { isTenpai, shanten } from './hand'
 import { evaluateWin } from './majiangAdapter'
 import { decodeMatch, replayRound, snapshotAt } from './replay'
 import { exhaustiveDrawDelta } from './scoring'
 import {
   ALL_TILE_CODES,
+  indexToTileCode,
   isRed,
   normalizeTile,
   sameTileKind,
@@ -1441,36 +1442,108 @@ function applyReach(
   log: TenhouLog,
   request: Extract<EditRequest, { type: 'reach' }>,
   changes: AutoChange[],
+  locked: Set<string>,
 ): string | undefined {
   const replayed = replayRound(log, request.round)
   const state = snapshotAt(replayed, request.event)
   const stream = getRoundSection(log.log[request.round]!, 'discard', request.actor)
+  if (!request.enabled) {
+    const reachIndex = stream.findIndex((item) => typeof item === 'string' && /^r(?:60|\d{2})$/.test(item))
+    if (reachIndex < 0) return undefined
+    const before = stream[reachIndex]!
+    const after = Number(String(before).slice(1))
+    stream[reachIndex] = after
+    changes.push({
+      id: `change-${changes.length + 1}`,
+      kind: 'manual',
+      ref: { round: request.round, section: 'discard', seat: request.actor, index: reachIndex },
+      before,
+      after,
+      reason: 'リーチ宣言を解除',
+    })
+    return undefined
+  }
   let index = state.streamCursors.discards[request.actor]! - 1
   if (index < 0) index = 0
   while (index < stream.length && typeof stream[index] === 'string' && parseMeldString(stream[index] as string)) index += 1
   const before = stream[index]
   if (before === undefined) return 'リーチを設定できる打牌がありません'
-  if (request.enabled) {
-    const open = state.melds[request.actor]!.some((meld) => meld.type !== 'ankan')
-    if (open) return '門前ではないためリーチを設定できません'
-    const handCodes = state.hands[request.actor]!.map((id) => state.tiles[id]!.code)
-    if (!isTenpai(handCodes, state.melds[request.actor]!.length)) return '現在の手牌が聴牌していないためリーチを設定できません'
-    if (state.scores[request.actor]! < 1000) return '1000点未満のためリーチ棒を支払えません'
-    if (typeof before === 'string' && before.startsWith('r')) return undefined
-    stream[index] = `r${before}`
-  } else {
-    if (typeof before !== 'string' || !before.startsWith('r')) return undefined
-    stream[index] = Number(before.slice(1))
+  const discardEvent = replayed.events.find((candidate) =>
+    candidate.type === 'discard'
+    && candidate.actor === request.actor
+    && candidate.rawRef?.section === 'discard'
+    && candidate.rawRef.index === index)
+  if (!discardEvent) return 'リーチ宣言牌の手順を追跡できません'
+  let reachState = snapshotAt(replayed, discardEvent.index)
+  const open = reachState.melds[request.actor]!.some((meld) => meld.type !== 'ankan')
+  if (open) return '門前ではないためリーチを設定できません'
+  if (reachState.scores[request.actor]! < 1000) return '1000点未満のためリーチ棒を支払えません'
+  if (typeof before === 'string' && before.startsWith('r')) return undefined
+
+  let handCodes = reachState.hands[request.actor]!.map((id) => reachState.tiles[id]!.code)
+  if (!isTenpai(handCodes, reachState.melds[request.actor]!.length)) {
+    const target = nearestTenpaiCodes(handCodes, reachState.melds[request.actor]!.length)
+    if (!target) return 'リーチ地点の手牌から聴牌形を構成できません'
+    const forced = forceHandCodes(
+      log,
+      request.round,
+      discardEvent.index,
+      request.actor,
+      target,
+      changes,
+      locked,
+      'リーチを成立させるため門前手牌を最小限の差替えで聴牌形へ補正',
+    )
+    if (typeof forced === 'string') return forced
+    reachState = snapshotAt(replayRound(log, request.round), discardEvent.index)
+    handCodes = reachState.hands[request.actor]!.map((id) => reachState.tiles[id]!.code)
+    if (!isTenpai(handCodes, reachState.melds[request.actor]!.length)) {
+      return '手牌補正後もリーチ地点で聴牌を確認できません'
+    }
   }
+  stream[index] = `r${before}`
   changes.push({
     id: `change-${changes.length + 1}`,
     kind: 'manual',
     ref: { round: request.round, section: 'discard', seat: request.actor, index },
     before,
     after: stream[index]!,
-    reason: request.enabled ? '門前・聴牌・持ち点を確認してリーチを設定' : 'リーチ宣言を解除',
+    reason: '門前・聴牌・持ち点を確認してリーチを設定',
   })
   return undefined
+}
+
+function nearestTenpaiCodes(codes: TileCode[], openMeldCount: number): TileCode[] | undefined {
+  let current = [...codes]
+  const baseCodes = Array.from({ length: 34 }, (_, index) => indexToTileCode(index))
+  for (let step = 0; step < 8; step += 1) {
+    if (isTenpai(current, openMeldCount)) return current
+    const currentShanten = shanten(current, openMeldCount)
+    let best: { codes: TileCode[]; shanten: number; replacement: TileCode; index: number } | undefined
+    const seenKinds = new Set<number>()
+    for (let index = 0; index < current.length; index += 1) {
+      const removedKind = normalizeTile(current[index]!)
+      if (seenKinds.has(removedKind)) continue
+      seenKinds.add(removedKind)
+      for (const replacement of baseCodes) {
+        if (normalizeTile(replacement) === removedKind) continue
+        const candidate = [...current]
+        candidate[index] = replacement
+        const count = candidate.filter((code) => normalizeTile(code) === normalizeTile(replacement)).length
+        if (count > 4) continue
+        const candidateShanten = shanten(candidate, openMeldCount)
+        if (
+          !best
+          || candidateShanten < best.shanten
+          || (candidateShanten === best.shanten && replacement < best.replacement)
+          || (candidateShanten === best.shanten && replacement === best.replacement && index < best.index)
+        ) best = { codes: candidate, shanten: candidateShanten, replacement, index }
+      }
+    }
+    if (!best || best.shanten >= currentShanten) return undefined
+    current = best.codes
+  }
+  return isTenpai(current, openMeldCount) ? current : undefined
 }
 
 function applyScore(
@@ -1852,7 +1925,7 @@ export function solveEdit(
     } else if (request.type === 'meld-change') {
       conflict = applyMeldChange(output, request, changes)
     } else if (request.type === 'reach') {
-      conflict = applyReach(output, request, changes)
+      conflict = applyReach(output, request, changes, locked)
     } else {
       conflict = applyScore(output, request, changes)
     }

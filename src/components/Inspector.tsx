@@ -242,7 +242,7 @@ function PlayerEditor({
         <div className="section-title">
           <div>
             <h3>リーチ状態</h3>
-            <p>門前・聴牌・持ち点を検証</p>
+            <p>門前・持ち点を検証し、非聴牌なら自動補正</p>
           </div>
         </div>
         <button
