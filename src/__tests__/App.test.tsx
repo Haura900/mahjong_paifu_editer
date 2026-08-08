@@ -99,6 +99,26 @@ describe('browser-facing editor workflow', () => {
       .forEach((name) => expect(prompt.value).toContain(name))
   })
 
+  it('reports a failed scene while keeping successfully generated scenes', async () => {
+    render(<App />)
+    expect(await screen.findByText(/全 11 局/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /AI・スクリプト/ }))
+    fireEvent.change(screen.getByRole('textbox', { name: '牌譜編集スクリプト' }), { target: { value: `
+KEEP_ONLY
+SCENE "失敗案"
+SET KAMI RIVER 999 4p
+END
+SCENE "成功案"
+SET KAMI RIVER 10 4p
+END
+` } })
+    fireEvent.click(screen.getByRole('button', { name: 'スクリプトを実行' }))
+
+    expect(await screen.findByText(/1個の局面案を残した現在局の後へ追加しました（1個はスキップ）/)).toBeInTheDocument()
+    expect(screen.getByText(/SCENE「失敗案」/)).toBeInTheDocument()
+    expect(screen.getByText(/全 2 局/)).toBeInTheDocument()
+  }, 20_000)
+
   it('fixes the selected analysis user at the bottom and reminds the East-1 wind on copy', async () => {
     const { container } = render(<App />)
     expect(await screen.findByText(/全 11 局/)).toBeInTheDocument()

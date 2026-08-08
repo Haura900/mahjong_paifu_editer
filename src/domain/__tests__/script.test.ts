@@ -69,6 +69,33 @@ END
     expect(result.changes.length).toBeGreaterThan(0)
   }, 30_000)
 
+  it('skips only failed scenes and continues creating later scenes', () => {
+    const decoded = decodeMatch(sample)
+    const source = decoded.rounds[0]!
+    const original = source.snapshots.at(-1)!.rivers[3]![6]!.code
+    const result = executePaifuScript(sample, `
+KEEP_ONLY
+SCENE "途中で適用失敗"
+SET KAMI RIVER 7 1z
+SET KAMI RIVER 999 4p
+END
+SCENE "構文失敗"
+UNKNOWN KAMI RIVER 7 1z
+END
+SCENE "成功"
+SET KAMI RIVER 10 4p
+END
+`, { round: 0, event: source.events.length - 1, self: 0, seed: 20260726 })
+
+    expect(result.sceneCount).toBe(1)
+    expect(result.sceneErrors).toHaveLength(2)
+    expect(result.sceneErrors.map((error) => error.name)).toEqual(['途中で適用失敗', '構文失敗'])
+    expect(result.output.log).toHaveLength(2)
+    const rounds = decodeMatch(result.output).rounds
+    expect(rounds[0]!.snapshots.at(-1)!.rivers[3]![6]!.code).toBe(original)
+    expect(rounds[1]!.snapshots.at(-1)!.rivers[3]![9]!.code).toBe(24)
+  }, 30_000)
+
   it('enables reach from text and forces the selected hand into tenpai', () => {
     const round = decodeMatch(sample).rounds[0]!
     const result = executePaifuScript(sample, 'KEEP_ONLY\nREACH SELF ON AT 1', {

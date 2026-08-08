@@ -445,9 +445,15 @@ export function App() {
         setEvent(Math.max(0, (decodeMatch(result.output).rounds[0]?.events.length ?? 1) - 1))
       }
       setScriptOpen(false)
+      const skipped = result.sceneErrors.length
       setNotice(result.sceneCount
-        ? `${result.sceneCount}個の局面案を${result.keepOnly ? '残した現在局' : '現在局'}の後へ追加しました`
-        : `${result.commandCount}個のスクリプト命令を適用しました`)
+        ? `${result.sceneCount}個の局面案を${result.keepOnly ? '残した現在局' : '現在局'}の後へ追加しました${skipped ? `（${skipped}個はスキップ）` : ''}`
+        : skipped
+          ? `${skipped}個の局面案をスキップしました`
+          : `${result.commandCount}個のスクリプト命令を適用しました`)
+      setError(skipped
+        ? result.sceneErrors.map(({ name, message }) => `SCENE「${name}」: ${message}`).join(' / ')
+        : undefined)
       return undefined
     } catch (caught) {
       return caught instanceof Error ? caught.message : String(caught)

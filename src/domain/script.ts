@@ -32,6 +32,7 @@ export const PAIFU_SCRIPT_SPEC = `牌譜編集スクリプト v1
 - REACH <席> ON [AT <巡目>]        リーチを追加する。非聴牌ならその地点の門前手を聴牌形へ自動補正する。
 - REACH <席> OFF                   その席のリーチを解除する。
 - SCENE "名前" ～ END              現在局を元に独立した案を作り、現在局の直後へ追加する。
+- SCENE内で失敗した案はその案だけを破棄してエラーを表示し、後続のSCENEは続けて実行する。
 - SCENE外の命令は現在局そのものへ適用する。SCENEは最大20個、命令は全体で最大200個。
 
 例:
@@ -102,6 +103,12 @@ type ScriptAction = SetAction | SwapAction | MeldAddAction | MeldRemoveAction | 
 interface Scene {
   name: string
   actions: ScriptAction[]
+  errors: string[]
+}
+
+export interface ScriptSceneError {
+  name: string
+  message: string
 }
 
 export interface ParsedPaifuScript {
@@ -114,6 +121,7 @@ export interface ScriptExecutionResult {
   output: TenhouLog
   changes: AutoChange[]
   sceneCount: number
+  sceneErrors: ScriptSceneError[]
   commandCount: number
   keepOnly: boolean
 }
@@ -163,7 +171,10 @@ export function parsePaifuScript(input: string): ParsedPaifuScript {
     const source = rawLine.trim()
     if (!source || source.startsWith('#')) return
     if (/^KEEP_ONLY$/i.test(source)) {
-      if (current) scriptError(line, 'KEEP_ONLYはSCENEの外に置いてください')
+      if (current) {
+        current.errors.push(`${line}行目: KEEP_ONLYはSCENEの外に置いてください`)
+        return
+      }
       if (result.keepOnly) scriptError(line, 'KEEP_ONLYは1回だけ指定できます')
       if (commandCount || result.scenes.length) scriptError(line, 'KEEP_ONLYはスクリプトの先頭に置いてください')
       result.keepOnly = true
@@ -175,96 +186,103 @@ export function parsePaifuScript(input: string): ParsedPaifuScript {
       const match = source.match(/^SCENE\s+(?:"([^"]+)"|'([^']+)'|(.+))$/i)
       const name = (match?.[1] ?? match?.[2] ?? match?.[3] ?? '').trim()
       if (!name) scriptError(line, 'SCENE名を指定してください')
-      current = { name, actions: [] }
+      current = { name, actions: [], errors: [] }
       result.scenes.push(current)
       if (result.scenes.length > 20) scriptError(line, 'SCENEは20個までです')
       return
     }
     if (/^END$/i.test(source)) {
       if (!current) scriptError(line, '対応するSCENEがありません')
-      if (!current.actions.length) scriptError(line, 'SCENEに命令がありません')
+      if (!current.actions.length && !current.errors.length) {
+        current.errors.push(`${line}行目: SCENEに命令がありません`)
+      }
       current = undefined
       return
     }
 
-    const tokens = source.split(/\s+/)
-    const target = current?.actions ?? result.actions
-    if (tokens[0]?.toUpperCase() === 'SET') {
-      const parsed = parseLocation(tokens.slice(1), line)
-      const tile = tokens[1 + parsed.consumed]
-      const code = tile ? fromScriptTile(tile) : undefined
-      if (!code) scriptError(line, `牌「${tile ?? ''}」を認識できません`)
-      if (tokens.length !== parsed.consumed + 2) scriptError(line, 'SET命令の末尾に余分な値があります')
-      target.push({ kind: 'set', location: parsed.location, code, line })
-    } else if (tokens[0]?.toUpperCase() === 'SWAP') {
-      const first = parseLocation(tokens.slice(1), line)
-      const withIndex = 1 + first.consumed
-      if (tokens[withIndex]?.toUpperCase() !== 'WITH') scriptError(line, 'SWAPの2場所の間にはWITHが必要です')
-      const second = parseLocation(tokens.slice(withIndex + 1), line)
-      if (tokens.length !== withIndex + second.consumed + 1) scriptError(line, 'SWAP命令の末尾に余分な値があります')
-      target.push({ kind: 'swap', first: first.location, second: second.location, line })
-    } else if (tokens[0]?.toUpperCase() === 'MELD_ADD') {
-      const actor = tokens[1]?.toUpperCase()
-      const meldType = tokens[2]?.toLowerCase()
-      if (!actor || (meldType !== 'chi' && meldType !== 'pon')) {
-        scriptError(line, 'MELD_ADDは席と CHI / PON を指定してください')
+    try {
+      const tokens = source.split(/\s+/)
+      const target = current?.actions ?? result.actions
+      if (tokens[0]?.toUpperCase() === 'SET') {
+        const parsed = parseLocation(tokens.slice(1), line)
+        const tile = tokens[1 + parsed.consumed]
+        const code = tile ? fromScriptTile(tile) : undefined
+        if (!code) scriptError(line, `牌「${tile ?? ''}」を認識できません`)
+        if (tokens.length !== parsed.consumed + 2) scriptError(line, 'SET命令の末尾に余分な値があります')
+        target.push({ kind: 'set', location: parsed.location, code, line })
+      } else if (tokens[0]?.toUpperCase() === 'SWAP') {
+        const first = parseLocation(tokens.slice(1), line)
+        const withIndex = 1 + first.consumed
+        if (tokens[withIndex]?.toUpperCase() !== 'WITH') scriptError(line, 'SWAPの2場所の間にはWITHが必要です')
+        const second = parseLocation(tokens.slice(withIndex + 1), line)
+        if (tokens.length !== withIndex + second.consumed + 1) scriptError(line, 'SWAP命令の末尾に余分な値があります')
+        target.push({ kind: 'swap', first: first.location, second: second.location, line })
+      } else if (tokens[0]?.toUpperCase() === 'MELD_ADD') {
+        const actor = tokens[1]?.toUpperCase()
+        const meldType = tokens[2]?.toLowerCase()
+        if (!actor || (meldType !== 'chi' && meldType !== 'pon')) {
+          scriptError(line, 'MELD_ADDは席と CHI / PON を指定してください')
+        }
+        const tileCount = meldType === 'chi' ? 3 : 1
+        const codeTokens = tokens.slice(3, 3 + tileCount)
+        const codes = codeTokens.map(fromScriptTile)
+        if (codes.length !== tileCount || codes.some((code) => !code)) {
+          scriptError(line, 'MELD_ADDの牌を認識できません')
+        }
+        const from = 3 + tileCount
+        if (tokens[from]?.toUpperCase() !== 'FROM' || tokens[from + 2]?.toUpperCase() !== 'RIVER') {
+          scriptError(line, 'MELD_ADDは FROM <席> RIVER <巡目> で鳴く河牌を指定してください')
+        }
+        if (tokens.length !== from + 4) scriptError(line, 'MELD_ADD命令の末尾に余分な値があります')
+        const parsedCodes = codes as TileCode[]
+        const meldCodes = meldType === 'pon'
+          ? Array<TileCode>(3).fill(parsedCodes[0]!)
+          : parsedCodes
+        target.push({
+          kind: 'meld-add',
+          actor,
+          meldType,
+          codes: meldCodes,
+          source: {
+            kind: 'player',
+            seat: tokens[from + 1]!.toUpperCase(),
+            area: 'river',
+            index: parseIndex(tokens[from + 3], line),
+          },
+          line,
+        })
+      } else if (tokens[0]?.toUpperCase() === 'MELD_REMOVE') {
+        if (tokens.length !== 3 || !tokens[1]) scriptError(line, 'MELD_REMOVEは席と副露番号を指定してください')
+        target.push({
+          kind: 'meld-remove',
+          actor: tokens[1]!.toUpperCase(),
+          index: parseIndex(tokens[2], line),
+          line,
+        })
+      } else if (tokens[0]?.toUpperCase() === 'REACH') {
+        const actor = tokens[1]?.toUpperCase()
+        const mode = tokens[2]?.toUpperCase()
+        if (!actor || (mode !== 'ON' && mode !== 'OFF')) scriptError(line, 'REACHは席と ON / OFF を指定してください')
+        if (mode === 'OFF' && tokens.length !== 3) scriptError(line, 'REACH OFFには巡目を指定しません')
+        if (mode === 'ON' && tokens.length !== 3 && (tokens.length !== 5 || tokens[3]?.toUpperCase() !== 'AT')) {
+          scriptError(line, 'REACH ONの巡目は AT <巡目> で指定してください')
+        }
+        target.push({
+          kind: 'reach',
+          actor,
+          enabled: mode === 'ON',
+          turn: tokens.length === 5 ? parseIndex(tokens[4], line) : undefined,
+          line,
+        })
+      } else {
+        scriptError(line, `命令「${tokens[0]}」を認識できません`)
       }
-      const tileCount = meldType === 'chi' ? 3 : 1
-      const codeTokens = tokens.slice(3, 3 + tileCount)
-      const codes = codeTokens.map(fromScriptTile)
-      if (codes.length !== tileCount || codes.some((code) => !code)) {
-        scriptError(line, 'MELD_ADDの牌を認識できません')
-      }
-      const from = 3 + tileCount
-      if (tokens[from]?.toUpperCase() !== 'FROM' || tokens[from + 2]?.toUpperCase() !== 'RIVER') {
-        scriptError(line, 'MELD_ADDは FROM <席> RIVER <巡目> で鳴く河牌を指定してください')
-      }
-      if (tokens.length !== from + 4) scriptError(line, 'MELD_ADD命令の末尾に余分な値があります')
-      const parsedCodes = codes as TileCode[]
-      const meldCodes = meldType === 'pon'
-        ? Array<TileCode>(3).fill(parsedCodes[0]!)
-        : parsedCodes
-      target.push({
-        kind: 'meld-add',
-        actor,
-        meldType,
-        codes: meldCodes,
-        source: {
-          kind: 'player',
-          seat: tokens[from + 1]!.toUpperCase(),
-          area: 'river',
-          index: parseIndex(tokens[from + 3], line),
-        },
-        line,
-      })
-    } else if (tokens[0]?.toUpperCase() === 'MELD_REMOVE') {
-      if (tokens.length !== 3 || !tokens[1]) scriptError(line, 'MELD_REMOVEは席と副露番号を指定してください')
-      target.push({
-        kind: 'meld-remove',
-        actor: tokens[1]!.toUpperCase(),
-        index: parseIndex(tokens[2], line),
-        line,
-      })
-    } else if (tokens[0]?.toUpperCase() === 'REACH') {
-      const actor = tokens[1]?.toUpperCase()
-      const mode = tokens[2]?.toUpperCase()
-      if (!actor || (mode !== 'ON' && mode !== 'OFF')) scriptError(line, 'REACHは席と ON / OFF を指定してください')
-      if (mode === 'OFF' && tokens.length !== 3) scriptError(line, 'REACH OFFには巡目を指定しません')
-      if (mode === 'ON' && tokens.length !== 3 && (tokens.length !== 5 || tokens[3]?.toUpperCase() !== 'AT')) {
-        scriptError(line, 'REACH ONの巡目は AT <巡目> で指定してください')
-      }
-      target.push({
-        kind: 'reach',
-        actor,
-        enabled: mode === 'ON',
-        turn: tokens.length === 5 ? parseIndex(tokens[4], line) : undefined,
-        line,
-      })
-    } else {
-      scriptError(line, `命令「${tokens[0]}」を認識できません`)
+      commandCount += 1
+      if (commandCount > 200) scriptError(line, '命令は全体で200個までです')
+    } catch (error) {
+      if (!current) throw error
+      current.errors.push(error instanceof Error ? error.message : String(error))
     }
-    commandCount += 1
-    if (commandCount > 200) scriptError(line, '命令は全体で200個までです')
   })
 
   if (current) throw new Error(`SCENE「${current.name}」のENDがありません`)
@@ -495,6 +513,7 @@ export function executePaifuScript(
       })
     : options.lockedRefs ?? []
   const changes: AutoChange[] = []
+  const sceneErrors: ScriptSceneError[] = []
 
   if (parsed.actions.length) {
     const applied = executeActions(
@@ -512,11 +531,22 @@ export function executePaifuScript(
 
   const inserted: RawRound[] = []
   parsed.scenes.forEach((scene, sceneIndex) => {
-    const source = singleRoundLog(input, options.round)
-    const applied = executeActions(source, 0, options.event, options.self, scene.actions, [], seed + sceneIndex)
-    const insertedRound = activeRound + 1 + sceneIndex
-    inserted.push(structuredClone(applied.output.log[0]!))
-    changes.push(...applied.changes.map((change) => moveChangeRound(change, insertedRound)))
+    if (scene.errors.length) {
+      sceneErrors.push({ name: scene.name, message: scene.errors.join(' / ') })
+      return
+    }
+    try {
+      const source = singleRoundLog(input, options.round)
+      const applied = executeActions(source, 0, options.event, options.self, scene.actions, [], seed + sceneIndex)
+      const insertedRound = activeRound + 1 + inserted.length
+      inserted.push(structuredClone(applied.output.log[0]!))
+      changes.push(...applied.changes.map((change) => moveChangeRound(change, insertedRound)))
+    } catch (error) {
+      sceneErrors.push({
+        name: scene.name,
+        message: error instanceof Error ? error.message : String(error),
+      })
+    }
   })
   if (inserted.length) output.log.splice(activeRound + 1, 0, ...inserted)
   output = parseTenhouLog(output)
@@ -524,7 +554,8 @@ export function executePaifuScript(
   return {
     output,
     changes,
-    sceneCount: parsed.scenes.length,
+    sceneCount: inserted.length,
+    sceneErrors,
     commandCount: Number(parsed.keepOnly) + parsed.actions.length + parsed.scenes.reduce((sum, scene) => sum + scene.actions.length, 0),
     keepOnly: parsed.keepOnly,
   }
