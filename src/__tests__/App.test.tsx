@@ -54,6 +54,19 @@ describe('browser-facing editor workflow', () => {
     expect(screen.getByText(/2件 処理中/)).toBeInTheDocument()
   }, 20_000)
 
+  it('opens each selected round at its final state', async () => {
+    const { container } = render(<App />)
+    expect(await screen.findByText(/全 11 局/)).toBeInTheDocument()
+    const slider = screen.getByRole('slider', { name: /^巡目/ })
+    expect(slider).toHaveValue(slider.getAttribute('max'))
+
+    const eastTwo = [...container.querySelectorAll('.round-list strong')]
+      .find((element) => element.textContent === '東2局')
+    fireEvent.click(eastTwo!.closest('button')!)
+    expect(slider).toHaveValue(slider.getAttribute('max'))
+    expect(Number(slider.getAttribute('max'))).toBeGreaterThan(0)
+  })
+
   it('opens compatible JSON in a copyable text box while retaining file save', async () => {
     render(<App />)
     expect(await screen.findByText(/全 11 局/)).toBeInTheDocument()

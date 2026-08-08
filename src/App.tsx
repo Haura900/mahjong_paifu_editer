@@ -111,7 +111,7 @@ export function App() {
     clearEditPipeline()
     setCurrentProject(createProject(decoded.raw))
     setRound(0)
-    setEvent(0)
+    setEvent(Math.max(0, (decoded.rounds[0]?.events.length ?? 1) - 1))
     setViewpoint(decoded.rounds[0]?.snapshots[0]?.dealer ?? 0)
     setAnalysisSeat(undefined)
     setViewpointLocked(false)
@@ -126,11 +126,11 @@ export function App() {
     try {
       if (projectFile || (text.includes('"format"') && text.includes('mahjong-paifu-editor-project'))) {
         const loaded = parseProject(text)
-        decodeMatch(loaded.current)
+        const loadedMatch = decodeMatch(loaded.current)
         clearEditPipeline()
         setCurrentProject(loaded)
         setRound(0)
-        setEvent(0)
+        setEvent(Math.max(0, (loadedMatch.rounds[0]?.events.length ?? 1) - 1))
         setAnalysisSeat(undefined)
         setViewpointLocked(false)
         setRoundClipboard(undefined)
@@ -352,7 +352,7 @@ export function App() {
 
   const handleRound = (next: number) => {
     setRound(next)
-    setEvent(0)
+    setEvent(Math.max(0, (decoded?.rounds[next]?.events.length ?? 1) - 1))
     setSelection(undefined)
     setPlaying(false)
     if (viewpointLocked && analysisSeat !== undefined) {
@@ -376,7 +376,7 @@ export function App() {
       lockedRefsForSingleRound(project.lockedRefs, round),
     ))
     setRound(0)
-    setEvent(0)
+    setEvent(Math.max(0, decodedRound.events.length - 1))
     setSelection(undefined)
     setPlaying(false)
     setNotice(`${label}だけを残しました。東1局の風情報はプレイヤー名の並びから保持しています`)
@@ -402,7 +402,7 @@ export function App() {
         sourceRoundNumber: roundClipboard[0][0],
       }, output, shiftLockedRefsForInsert(project.lockedRefs, insertAt)))
       setRound(insertAt)
-      setEvent(0)
+      setEvent(Math.max(0, (decodeMatch(output).rounds[insertAt]?.events.length ?? 1) - 1))
       setSelection(undefined)
       setPlaying(false)
       setNotice(`${roundLabel(roundClipboard[0][0])}をもう一度追加しました`)
@@ -442,7 +442,7 @@ export function App() {
       setPlaying(false)
       if (result.keepOnly) {
         setRound(0)
-        setEvent(0)
+        setEvent(Math.max(0, (decodeMatch(result.output).rounds[0]?.events.length ?? 1) - 1))
       }
       setScriptOpen(false)
       setNotice(result.sceneCount
