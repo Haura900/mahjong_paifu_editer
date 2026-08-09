@@ -2,11 +2,25 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { buildAiEditPrompt, spareHonorTiles } from '../aiPrompt'
-import { parseTenhouLog } from '../codec'
-import { decodeMatch } from '../replay'
+import { parseTenhouLog, refKey } from '../codec'
+import { decodeMatch, snapshotAt } from '../replay'
 import { executePaifuScript, parsePaifuScript } from '../script'
+import { toMajiangTile } from '../tile'
+import type { RoundState, Seat } from '../types'
 
 const sample = parseTenhouLog(readFileSync(resolve(process.cwd(), 'sample.txt'), 'utf8'))
+
+function handSignature(state: RoundState, seat: Seat): string[] {
+  return state.hands[seat]!.map((id) => {
+    const tile = state.tiles[id]!
+    return `${refKey(tile.acquisitionRef)}=${tile.code}:${tile.red}`
+  }).sort()
+}
+
+function scriptTile(code: number): string {
+  const value = toMajiangTile(code)
+  return `${value[1]}${value[0]}`
+}
 
 describe('paifu text script', () => {
   it('parses independent scenes and relative river edits', () => {
@@ -175,6 +189,109 @@ END
   }, 30_000)
 })
 
+describe('LOCK SELF HAND ALL', () => {
+  it('parses only the formal syntax and rejects invalid targets or extra arguments', () => {
+    expect(parsePaifuScript('LOCK SELF HAND ALL').actions[0]).toMatchObject({ kind: 'lock-self-hand-all' })
+    for (const invalid of [
+      'LOCK KAMI HAND ALL',
+      'LOCK SELF RIVER ALL',
+      'LOCK SELF HAND',
+      'LOCK SELF HAND ALL EXTRA',
+    ]) {
+      expect(() => parsePaifuScript(invalid)).toThrow('LOCKの正式構文')
+    }
+  })
+
+  it('is idempotent and includes every occupied hand source plus the current draw', () => {
+    const round = decodeMatch(sample).rounds[0]!
+    const event = round.snapshots.findIndex((state) => state.lastDraw?.seat === 0)
+    expect(event).toBeGreaterThanOrEqual(0)
+    const state = snapshotAt(round, event)
+    const once = executePaifuScript(sample, 'KEEP_ONLY\nLOCK SELF HAND ALL', {
+      round: 0, event, self: 0,
+    })
+    const twice = executePaifuScript(sample, 'KEEP_ONLY\nLOCK SELF HAND ALL\nLOCK SELF HAND ALL', {
+      round: 0, event, self: 0,
+    })
+    expect(twice.output).toEqual(once.output)
+    expect(state.hands[0]).toContain(state.lastDraw!.tileId)
+    expect(state.hands[0]).toHaveLength(14)
+  })
+
+  it('keeps a red five distinct and rejects SET or either side of SWAP', () => {
+    const decoded = decodeMatch(sample)
+    const found = decoded.rounds.flatMap((round, roundIndex) =>
+      round.snapshots.map((state, event) => ({ state, round: roundIndex, event })))
+      .find(({ state }) => state.hands[0]!.some((id) => state.tiles[id]!.red))
+    expect(found).toBeDefined()
+    const redBefore = handSignature(found!.state, 0)
+    const redLocked = executePaifuScript(sample, 'KEEP_ONLY\nLOCK SELF HAND ALL', {
+      round: found!.round, event: found!.event, self: 0,
+    })
+    expect(handSignature(snapshotAt(decodeMatch(redLocked.output).rounds[0]!, found!.event), 0)).toEqual(
+      redBefore.map((entry) => entry.replace(/^\d+:/, '0:')),
+    )
+
+    const state = decoded.rounds[0]!.snapshots[0]!
+    const current = state.tiles[state.hands[0]![0]!]!.code
+    const replacement = current === 11 ? 12 : 11
+    expect(() => executePaifuScript(sample, `KEEP_ONLY\nLOCK SELF HAND ALL\nSET SELF HAND 1 ${scriptTile(replacement)}`, {
+      round: 0, event: 0, self: 0,
+    })).toThrow('固定')
+    expect(() => executePaifuScript(sample, 'KEEP_ONLY\nLOCK SELF HAND ALL\nSWAP KAMI HAND 1 WITH SELF HAND 1', {
+      round: 0, event: 0, self: 0,
+    })).toThrow('交換先は固定')
+  })
+
+  it('excludes SELF from automatic fifth-tile repair while allowing another tile to move', () => {
+    const before = decodeMatch(sample).rounds[0]!.snapshots[0]!
+    const original = handSignature(before, 0).map((entry) => entry.replace(/^\d+:/, '0:'))
+    const result = executePaifuScript(sample, 'KEEP_ONLY\nLOCK SELF HAND ALL\nSET SHIMO HAND 1 5m', {
+      round: 0, event: 0, self: 0, seed: 20260726,
+    })
+    expect(result.changes.some((change) => change.kind === 'automatic')).toBe(true)
+    expect(handSignature(decodeMatch(result.output).rounds[0]!.snapshots[0]!, 0)).toEqual(original)
+  }, 30_000)
+
+  it('rolls back a conflicting scene, continues later scenes, and does not leak the lock', () => {
+    const state = decodeMatch(sample).rounds[0]!.snapshots[0]!
+    const current = state.tiles[state.hands[0]![0]!]!.code
+    const replacement = current === 11 ? 12 : 11
+    const result = executePaifuScript(sample, `KEEP_ONLY
+SCENE "固定競合"
+LOCK SELF HAND ALL
+SET SELF HAND 1 ${scriptTile(replacement)}
+END
+SCENE "後続成功"
+SET SELF HAND 1 ${scriptTile(replacement)}
+END`, { round: 0, event: 0, self: 0, seed: 20260726 })
+    expect(result.sceneErrors.map((error) => error.name)).toEqual(['固定競合'])
+    expect(result.sceneCount).toBe(1)
+    expect(result.output.log).toHaveLength(2)
+    const changed = decodeMatch(result.output).rounds[1]!.snapshots[0]!
+    expect(changed.tiles[changed.hands[0]![0]!]!.code).toBe(replacement)
+  }, 30_000)
+
+  it('keeps the exact SELF hand across early, middle, and late comparison scenes', () => {
+    const original = handSignature(decodeMatch(sample).rounds[0]!.snapshots[0]!, 0)
+      .map((entry) => entry.replace(/^\d+:/, 'SCENE:'))
+    const result = executePaifuScript(sample, `KEEP_ONLY
+SCENE "序盤"
+LOCK SELF HAND ALL
+END
+SCENE "中盤"
+LOCK SELF HAND ALL
+END
+SCENE "終盤"
+LOCK SELF HAND ALL
+END`, { round: 0, event: 0, self: 0 })
+    expect(result.sceneCount).toBe(3)
+    for (const round of decodeMatch(result.output).rounds.slice(1)) {
+      expect(handSignature(round.snapshots[0]!, 0).map((entry) => entry.replace(/^\d+:/, 'SCENE:'))).toEqual(original)
+    }
+  })
+})
+
 describe('AI editing prompt', () => {
   it('includes the instruction, full table, script spec, and honor preference', () => {
     const round = decodeMatch(sample).rounds[0]!
@@ -201,6 +318,10 @@ describe('AI editing prompt', () => {
     expect(prompt).toContain('REACH <席> ON')
     expect(prompt).toContain('SET <席> RIVER <巡目> <牌>')
     expect(prompt).toContain('SCENE "名前" ～ END')
+    expect(prompt).toContain('各SCENEの最初の命令を LOCK SELF HAND ALL')
+    expect(prompt).toContain('現在判断から目標判断へ近づく方向だけ')
+    expect(prompt).toContain('巡目は独立軸として序盤・中盤・終盤')
+    expect(prompt).toContain('LOCK SELF HAND ALL              実行時点のSELF手牌')
     expect(prompt).toContain('- 手牌:')
     expect(prompt).toContain('- 河:')
     expect(prompt).toContain('- ドラ表示牌:')

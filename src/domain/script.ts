@@ -33,6 +33,7 @@ export const PAIFU_SCRIPT_SPEC = `牌譜編集スクリプト v1
                                       基準打牌より前にある指定席の最後の打牌でリーチする。打牌判断用の局面ではこちらを優先する。
 - REACH <席> ON [AT <巡目>]        リーチを追加する。ATはリーチ者自身の河巡目。非聴牌ならその地点で自動聴牌補正する。
 - REACH <席> OFF                   その席のリーチを解除する。
+- LOCK SELF HAND ALL              実行時点のSELF手牌（ツモ牌を含み、副露を除く）をすべて固定する。
 - SCENE "名前" ～ END              現在局を元に独立した案を作り、現在局の直後へ追加する。
 - SCENE内で失敗した案はその案だけを破棄してエラーを表示し、後続のSCENEは続けて実行する。
 - SCENE外の命令は現在局そのものへ適用する。SCENEは最大20個、命令は全体で最大200個。
@@ -40,6 +41,7 @@ export const PAIFU_SCRIPT_SPEC = `牌譜編集スクリプト v1
 例:
 KEEP_ONLY
 SCENE "上家の4pを10巡目へ"
+LOCK SELF HAND ALL
 SET KAMI RIVER 7 1z
 SET KAMI RIVER 10 4p
 END`
@@ -101,7 +103,12 @@ interface ReachAction {
   line: number
 }
 
-type ScriptAction = SetAction | SwapAction | MeldAddAction | MeldRemoveAction | ReachAction
+interface LockSelfHandAllAction {
+  kind: 'lock-self-hand-all'
+  line: number
+}
+
+type ScriptAction = SetAction | SwapAction | MeldAddAction | MeldRemoveAction | ReachAction | LockSelfHandAllAction
 
 interface Scene {
   name: string
@@ -206,7 +213,17 @@ export function parsePaifuScript(input: string): ParsedPaifuScript {
     try {
       const tokens = source.split(/\s+/)
       const target = current?.actions ?? result.actions
-      if (tokens[0]?.toUpperCase() === 'SET') {
+      if (tokens[0]?.toUpperCase() === 'LOCK') {
+        if (
+          tokens.length !== 4
+          || tokens[1]?.toUpperCase() !== 'SELF'
+          || tokens[2]?.toUpperCase() !== 'HAND'
+          || tokens[3]?.toUpperCase() !== 'ALL'
+        ) {
+          scriptError(line, 'LOCKの正式構文は「LOCK SELF HAND ALL」です')
+        }
+        target.push({ kind: 'lock-self-hand-all', line })
+      } else if (tokens[0]?.toUpperCase() === 'SET') {
         const parsed = parseLocation(tokens.slice(1), line)
         const tile = tokens[1 + parsed.consumed]
         const code = tile ? fromScriptTile(tile) : undefined
@@ -352,6 +369,40 @@ function codeAtRef(log: TenhouLog, round: number, ref: RawRef): TileCode {
   return trace.code
 }
 
+interface SelfHandSnapshot {
+  refs: string[]
+  signature: string[]
+}
+
+function selfHandSnapshot(log: TenhouLog, round: number, event: number, self: Seat): SelfHandSnapshot {
+  const decodedRound = decodeMatch(log).rounds[round]
+  if (!decodedRound) throw new Error('指定された局がありません')
+  const state = snapshotAt(decodedRound, Math.min(event, decodedRound.events.length - 1))
+  const ids = [...state.hands[self]!]
+  if (state.lastDraw?.seat === self && !ids.includes(state.lastDraw.tileId)) ids.push(state.lastDraw.tileId)
+  const entries = ids.map((id) => state.tiles[id]!)
+  return {
+    refs: entries.map((tile) => refKey(tile.acquisitionRef)).sort(),
+    signature: entries
+      .map((tile) => `${refKey(tile.acquisitionRef)}=${tile.code}:${tile.red ? 'red' : 'normal'}`)
+      .sort(),
+  }
+}
+
+function assertSelfHandInvariant(
+  log: TenhouLog,
+  round: number,
+  event: number,
+  self: Seat,
+  expected: string[] | undefined,
+): void {
+  if (!expected) return
+  const actual = selfHandSnapshot(log, round, event, self).signature
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    throw new Error('LOCK SELF HAND ALLと競合し、SELF手牌の牌集合・赤牌区分・占有位置を維持できません')
+  }
+}
+
 function solveScriptEdit(
   log: TenhouLog,
   request: Parameters<typeof solveEdit>[1],
@@ -376,6 +427,7 @@ function applySet(
   const finalState = decodedRound.snapshots.at(-1)!
   const trace = Object.values(finalState.tiles).find((tile) => refKey(tile.acquisitionRef) === refKey(ref))
   if (!trace) throw new Error('差替え対象の物理牌を追跡できません')
+  if (new Set(lockedRefs).has(refKey(ref))) throw new Error('この牌の取得元は固定されています')
   if (trace.code === code) return { output: log, changes: [] }
   const result = solveEdit(log, {
     type: 'tile',
@@ -398,6 +450,7 @@ function executeActions(
   seed: number,
 ): { output: TenhouLog; changes: AutoChange[] } {
   const refs = actions.map((action) => {
+    if (action.kind === 'lock-self-hand-all') return []
     if (action.kind === 'set') return [locationRef(input, round, event, self, action.location)]
     if (action.kind === 'swap') return [
       locationRef(input, round, event, self, action.first),
@@ -416,21 +469,29 @@ function executeActions(
   })
   let output = structuredClone(input)
   const changes: AutoChange[] = []
+  const activeLocks = new Set(lockedRefs)
+  let handInvariant: string[] | undefined
 
   actions.forEach((action, index) => {
     try {
-      if (action.kind === 'set') {
-        const result = applySet(output, round, event, refs[index]![0]!, action.code, lockedRefs, seed)
+      if (action.kind === 'lock-self-hand-all') {
+        const snapshot = selfHandSnapshot(output, round, event, self)
+        snapshot.refs.forEach((key) => activeLocks.add(key))
+        handInvariant ??= snapshot.signature
+      } else if (action.kind === 'set') {
+        const result = applySet(output, round, event, refs[index]![0]!, action.code, activeLocks, seed)
         output = result.output
         changes.push(...result.changes)
       } else if (action.kind === 'swap') {
         const [first, second] = refs[index]!
+        if (activeLocks.has(refKey(first!))) throw new Error('SWAPの交換元は固定されています')
+        if (activeLocks.has(refKey(second!))) throw new Error('SWAPの交換先は固定されています')
         const firstCode = codeAtRef(input, round, first!)
         const secondCode = codeAtRef(input, round, second!)
-        let result = applySet(output, round, event, first!, secondCode, lockedRefs, seed)
+        let result = applySet(output, round, event, first!, secondCode, activeLocks, seed)
         output = result.output
         changes.push(...result.changes)
-        result = applySet(output, round, event, second!, firstCode, lockedRefs, seed)
+        result = applySet(output, round, event, second!, firstCode, activeLocks, seed)
         output = result.output
         changes.push(...result.changes)
       } else if (action.kind === 'meld-add') {
@@ -456,7 +517,7 @@ function executeActions(
           actor,
           meldType: action.meldType,
           forced: { codes: action.codes, calledIndex, target },
-        }, lockedRefs, seed)
+        }, activeLocks, seed)
         output = result.output
         changes.push(...result.changes)
       } else if (action.kind === 'meld-remove') {
@@ -471,7 +532,7 @@ function executeActions(
           event: decodedRound.events.length - 1,
           actor,
           meldId: meld.id,
-        }, lockedRefs, seed)
+        }, activeLocks, seed)
         output = result.output
         changes.push(...result.changes)
       } else {
@@ -499,10 +560,11 @@ function executeActions(
         }
         const result = solveScriptEdit(output, {
           type: 'reach', round, event: reachEvent, actor, enabled: action.enabled,
-        }, lockedRefs, seed)
+        }, activeLocks, seed)
         output = result.output
         changes.push(...result.changes)
       }
+      assertSelfHandInvariant(output, round, event, self, handInvariant)
     } catch (error) {
       throw new Error(`${action.line}行目: ${error instanceof Error ? error.message : String(error)}`)
     }
@@ -523,6 +585,16 @@ function moveChangeRound(change: AutoChange, round: number): AutoChange {
   }
 }
 
+function locksForSingleRound(lockedRefs: Iterable<string>, round: number): string[] {
+  return [...lockedRefs].flatMap((key) => {
+    const score = key.match(/^score:(\d+):(\d+)$/)
+    if (score) return Number(score[1]) === round ? [`score:0:${score[2]}`] : []
+    const raw = key.match(/^(\d+):(deal|draw|discard|dora|ura):(.*)$/)
+    if (raw) return Number(raw[1]) === round ? [`0:${raw[2]}:${raw[3]}`] : []
+    return [key]
+  })
+}
+
 export function executePaifuScript(
   input: TenhouLog,
   script: string,
@@ -533,14 +605,8 @@ export function executePaifuScript(
   let output = parsed.keepOnly ? singleRoundLog(input, options.round) : structuredClone(input)
   const activeRound = parsed.keepOnly ? 0 : options.round
   const activeLocks = parsed.keepOnly
-    ? [...(options.lockedRefs ?? [])].flatMap((key) => {
-        const score = key.match(/^score:(\d+):(\d+)$/)
-        if (score) return Number(score[1]) === options.round ? [`score:0:${score[2]}`] : []
-        const raw = key.match(/^(\d+):(deal|draw|discard|dora|ura):(.*)$/)
-        if (raw) return Number(raw[1]) === options.round ? [`0:${raw[2]}:${raw[3]}`] : []
-        return [key]
-      })
-    : options.lockedRefs ?? []
+    ? locksForSingleRound(options.lockedRefs ?? [], options.round)
+    : [...(options.lockedRefs ?? [])]
   const changes: AutoChange[] = []
   const sceneErrors: ScriptSceneError[] = []
 
@@ -566,7 +632,15 @@ export function executePaifuScript(
     }
     try {
       const source = singleRoundLog(input, options.round)
-      const applied = executeActions(source, 0, options.event, options.self, scene.actions, [], seed + sceneIndex)
+      const applied = executeActions(
+        source,
+        0,
+        options.event,
+        options.self,
+        scene.actions,
+        locksForSingleRound(options.lockedRefs ?? [], options.round),
+        seed + sceneIndex,
+      )
       const insertedRound = activeRound + 1 + inserted.length
       inserted.push(structuredClone(applied.output.log[0]!))
       changes.push(...applied.changes.map((change) => moveChangeRound(change, insertedRound)))
