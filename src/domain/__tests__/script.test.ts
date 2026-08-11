@@ -260,6 +260,35 @@ describe('LOCK SELF HAND ALL', () => {
     )).toThrow('固定')
   }, 60_000)
 
+  it('copies to a tsumogiri turn by converting it into an honor hand discard', () => {
+    const before = decodeMatch(lateReachSample).rounds[0]!
+    const finalBefore = before.snapshots.at(-1)!
+    const sourceState = before.snapshots[finalBefore.rivers[2]![7]!.eventIndex]!
+    const sourceCodes = sourceState.hands[2]!
+      .map((id) => sourceState.tiles[id]!.code)
+      .sort((a, b) => a - b)
+    expect(finalBefore.rivers[2]![12]!.tsumogiri).toBe(true)
+
+    const result = executePaifuScript(
+      lateReachSample,
+      'KEEP_ONLY\nCOPY SELF HAND FROM 8 TO 13\nREACH SELF ON AT 13',
+      { round: 0, event: before.events.length - 1, self: 2, seed: 20260811 },
+    )
+    const after = decodeMatch(result.output).rounds[0]!
+    const final = after.snapshots.at(-1)!
+    const turn13 = after.snapshots[final.rivers[2]![12]!.eventIndex]!
+    const turn12 = after.snapshots[final.rivers[2]![11]!.eventIndex]!
+    const codes = (state: RoundState) => state.hands[2]!
+      .map((id) => state.tiles[id]!.code)
+      .sort((a, b) => a - b)
+
+    expect(codes(turn13)).toEqual(sourceCodes)
+    expect(codes(turn12)).not.toEqual(sourceCodes)
+    expect(final.rivers[2]![12]!.tsumogiri).toBe(false)
+    expect(final.rivers[2]![12]!.reach).toBe(true)
+    expect(after.diagnostics.some((diagnostic) => diagnostic.severity === 'error')).toBe(false)
+  }, 60_000)
+
   it('turns every later discard into tsumogiri when reach is moved earlier', () => {
     const round = decodeMatch(lateReachSample).rounds[0]!
     const result = executePaifuScript(lateReachSample, `KEEP_ONLY

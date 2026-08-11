@@ -1,4 +1,4 @@
-import { parseTenhouLog, refKey } from './codec'
+import { parseTenhouLog, readRawRef, refKey, writeRawRef } from './codec'
 import { decodeMatch, snapshotAt } from './replay'
 import { solveEdit } from './solver'
 import { fromMajiangTile, normalizeTile, sameTileKind, tileLabel, toMajiangTile } from './tile'
@@ -6,6 +6,7 @@ import type {
   AutoChange,
   RawRef,
   RawRound,
+  RawTile,
   RoundState,
   Seat,
   TenhouLog,
@@ -489,7 +490,9 @@ interface TurnHandSnapshot {
   event: number
   entries: Array<{ ref: RawRef; key: string; code: TileCode }>
   discardedRef: RawRef
+  rawDiscardRef: RawRef
   incomingRef?: RawRef
+  tsumogiri: boolean
 }
 
 function handAfterDiscard(log: TenhouLog, round: number, seat: Seat, turn: number): TurnHandSnapshot {
@@ -517,7 +520,9 @@ function handAfterDiscard(log: TenhouLog, round: number, seat: Seat, turn: numbe
       return { ref: tile.acquisitionRef, key: refKey(tile.acquisitionRef), code: tile.code }
     }),
     discardedRef: discarded.acquisitionRef,
+    rawDiscardRef: river.rawRef,
     incomingRef: incoming?.tileId ? state.tiles[incoming.tileId]?.acquisitionRef : undefined,
+    tsumogiri: river.tsumogiri,
   }
 }
 
@@ -559,13 +564,19 @@ function copyHandAtTurn(
   }
   if (!target.incomingRef) throw new Error(`${toTurn}巡目に通常のツモがないため、直前巡目と異なる手牌を作れません`)
   const incomingKey = refKey(target.incomingRef)
-  if (incomingKey === refKey(target.discardedRef)) {
-    throw new Error(`${toTurn}巡目がツモ切りのため、直前巡目だけを字牌で崩せません`)
+  const wasTsumogiri = target.tsumogiri && incomingKey === refKey(target.discardedRef)
+  const outgoing = wasTsumogiri
+    ? target.entries.find((entry) => !activeLocks.has(entry.key) && desired.includes(entry.code))
+      ?? target.entries.find((entry) => !activeLocks.has(entry.key))
+    : undefined
+  if (wasTsumogiri && !outgoing) {
+    throw new Error(`${toTurn}巡目を手出しへ変換できる未固定の手牌がありません`)
   }
-
   const incomingCurrent = target.entries.find((entry) => entry.key === incomingKey)?.code
-  if (!incomingCurrent) throw new Error(`${toTurn}巡目のツモ牌が打牌後の手牌にありません`)
-  const incomingDesired = desired.includes(incomingCurrent) ? incomingCurrent : desired[0]!
+  if (!wasTsumogiri && !incomingCurrent) throw new Error(`${toTurn}巡目のツモ牌が打牌後の手牌にありません`)
+  const incomingDesired = outgoing && desired.includes(outgoing.code)
+    ? outgoing.code
+    : incomingCurrent && desired.includes(incomingCurrent) ? incomingCurrent : desired[0]!
   const breakHonor = chooseBreakHonor(log, round, desired, incomingDesired)
   let output = log
   const changes: AutoChange[] = []
@@ -574,7 +585,7 @@ function copyHandAtTurn(
     output,
     round,
     target.event,
-    target.discardedRef,
+    outgoing?.ref ?? target.discardedRef,
     breakHonor,
     activeLocks,
     seed,
@@ -583,11 +594,27 @@ function copyHandAtTurn(
   changes.push(...applied.changes)
 
   target = handAfterDiscard(output, round, seat, toTurn)
-  const incomingEntry = target.entries.find((entry) => entry.key === incomingKey)
-  if (!incomingEntry) throw new Error('コピー先巡目のツモ牌を差替え後に追跡できません')
-  applied = applySet(output, round, target.event, incomingEntry.ref, incomingDesired, activeLocks, seed)
+  const incomingRef = target.incomingRef
+  if (!incomingRef) throw new Error('コピー先巡目のツモ牌を差替え後に追跡できません')
+  applied = applySet(output, round, target.event, incomingRef, incomingDesired, activeLocks, seed)
   output = applied.output
   changes.push(...applied.changes)
+
+  if (wasTsumogiri) {
+    const before = readRawRef(output, target.rawDiscardRef)
+    const after: RawTile = typeof before === 'string' && before.startsWith('r')
+      ? `r${breakHonor}`
+      : breakHonor
+    writeRawRef(output, target.rawDiscardRef, after)
+    changes.push({
+      id: `change-${changes.length + 1}`,
+      kind: 'automatic',
+      ref: target.rawDiscardRef,
+      before,
+      after,
+      reason: `${toTurn}巡目のツモ切りを手出しへ変え、直前巡目だけを${tileLabel(breakHonor)}で崩すため補正`,
+    })
+  }
   activeLocks.add(incomingKey)
 
   for (let step = 0; step <= desired.length; step += 1) {
@@ -643,11 +670,7 @@ function executeActions(
       locationRef(input, round, event, self, action.second),
     ]
     if (action.kind === 'meld-add') return [locationRef(input, round, event, self, action.source)]
-    if (action.kind === 'reach' && action.turn) {
-      return [locationRef(input, round, event, self, {
-        kind: 'player', seat: action.actor, area: 'river', index: action.turn,
-      })]
-    }
+    if (action.kind === 'reach' && action.turn) return []
     if (action.kind === 'reach' && action.before) {
       return [locationRef(input, round, event, self, action.before)]
     }
@@ -752,10 +775,8 @@ function executeActions(
           if (!priorDiscard) throw new Error(`${action.actor}には基準打牌より前のリーチ宣言牌がありません`)
           reachEvent = priorDiscard.eventIndex
         } else if (action.turn) {
-          const reachRef = refs[index]![0]!
           const state = decodeMatch(output).rounds[round]!.snapshots.at(-1)!
-          const river = state.rivers[actor]!.find((item) =>
-            refKey(state.tiles[item.tileId]!.acquisitionRef) === refKey(reachRef))
+          const river = state.rivers[actor]![action.turn - 1]
           if (!river) throw new Error('リーチ宣言牌の巡目を追跡できません')
           reachEvent = river.eventIndex
         }
