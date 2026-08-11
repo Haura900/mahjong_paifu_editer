@@ -27,7 +27,7 @@ export const PAIFU_SCRIPT_SPEC = `牌譜編集スクリプト v1
 - SET URA <位置> <牌>              裏ドラ表示牌を差し替える。
 - SWAP <場所> WITH <場所>          2つの物理牌を交換する。場所の書式はSETの牌より前と同じ。
 - COPY <席> HAND FROM <巡目> TO <巡目>
-                                      FROMは残したい牌姿が実在する元巡目、TOはその牌姿を成立させる先の巡目。牌姿をFROM→TOへコピーする。直前巡目は字牌1枚で崩し、再現後の手牌を固定する。直後にTOと同巡目へのREACHがあれば宣言移動も固定前に一括適用する。
+                                      FROMは残したい牌姿が実在する元巡目、TOはその牌姿を成立させる先の巡目。牌姿をFROM→TOへコピーする。巡目番号の大小に制約はなく、早い巡目から遅い巡目、遅い巡目から早い巡目の両方に使える。直前巡目は字牌1枚で崩し、再現後の手牌を固定する。直後にTOと同巡目へのREACHがあれば宣言移動も固定前に一括適用する。
 - MELD_ADD <席> PON <牌> FROM <捨てた席> RIVER <巡目>
                                       指定河牌を鳴いてポンを追加する。必要な対子は自動補正する。
 - MELD_ADD <席> CHI <牌1> <牌2> <牌3> FROM <捨てた席> RIVER <巡目>
@@ -625,10 +625,21 @@ function copyHandAtTurn(
   carryReach: boolean,
 ): { output: TenhouLog; changes: AutoChange[]; signature: string[] } {
   if (toTurn < 2) throw new Error('コピー先は、直前巡目を作れる2巡目以降を指定してください')
-  const source = handAfterDiscard(log, round, seat, fromTurn)
-  const desired = source.entries.map((entry) => entry.code).sort((a, b) => a - b)
+  let source = handAfterDiscard(log, round, seat, fromTurn)
+  let desired = source.entries.map((entry) => entry.code).sort((a, b) => a - b)
   if (carryReach && !isTenpai(desired, source.meldCount)) {
-    throw new Error(`COPYの向きまたはコピー元が不正です。FROM ${fromTurn}は残したい聴牌形が存在する元巡目、TO ${toTurn}はその牌姿を成立させる先の巡目です`)
+    const state = decodeMatch(log).rounds[round]!.snapshots.at(-1)!
+    const reachTurns = state.rivers[seat]!
+      .map((river, index) => river.reach ? index + 1 : undefined)
+      .filter((turn): turn is number => turn !== undefined)
+    if (reachTurns.length !== 1) {
+      throw new Error(`${fromTurn}巡目のコピー元手牌は非聴牌で、代わりに使える元リーチ巡目を一意に特定できません`)
+    }
+    source = handAfterDiscard(log, round, seat, reachTurns[0]!)
+    desired = source.entries.map((entry) => entry.code).sort((a, b) => a - b)
+    if (!isTenpai(desired, source.meldCount)) {
+      throw new Error(`${reachTurns[0]}巡目の元リーチ手牌を聴牌として確認できません`)
+    }
   }
   let target = handAfterDiscard(log, round, seat, toTurn)
   if (source.entries.length !== target.entries.length) {

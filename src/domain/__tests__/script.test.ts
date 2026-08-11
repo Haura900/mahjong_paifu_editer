@@ -346,13 +346,7 @@ END`, { round: 0, event: before.events.length - 1, self: 0, seed: 20260811 })
     expect(prompt).toContain(`SELF / ${finalBefore.names[0]}: 13巡目`)
     expect(prompt).toContain('COPY SELF HAND FROM 14 TO 8')
     expect(prompt).toContain('FROM=残したいSELF牌姿の元巡目、TO=比較先のSELF巡目')
-
-    const reversed = executePaifuScript(lateReachSample, `KEEP_ONLY
-SCENE "逆方向"
-COPY SELF HAND FROM 8 TO 14
-REACH SELF ON AT 14
-END`, { round: 0, event: before.events.length - 1, self: 0, seed: 20260811 })
-    expect(reversed.sceneErrors[0]?.message).toContain('FROM 8は残したい聴牌形が存在する元巡目')
+    expect(prompt).toContain('FROM 8 TO 14もFROM 14 TO 8も用途に応じて正しい')
   }, 60_000)
 
   it('turns every later discard into tsumogiri when reach is moved earlier', () => {
@@ -498,7 +492,7 @@ describe('AI editing prompt', () => {
     expect(prompt).toContain('REACHとMELD_ADDは必要な聴牌形・手牌を実行時に自動補正')
     expect(prompt).toContain('REACH <席> ON BEFORE SELF RIVER <対象巡目>')
     expect(prompt).toContain('SELFのリーチ・聴牌時期を早める／遅らせる比較')
-    expect(prompt).toContain('COPYの方向は必ず FROM → TO')
+    expect(prompt).toContain('COPYのデータ移動方向は必ず FROM → TO')
     expect(prompt).toContain('必ず COPY SELF HAND FROM <残したい手牌の元巡目> TO <比較先巡目>')
     expect(prompt).toContain('REACH SELF ON ATだけの自動聴牌補正')
     expect(prompt).toContain('COPY SELF HAND を使う場合はCOPY自体が完成手牌を固定')
