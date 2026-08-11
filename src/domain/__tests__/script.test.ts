@@ -309,17 +309,17 @@ END`, { round: 0, event: before.events.length - 1, self: 2, seed: 20260811 })
     expect(scene.diagnostics.some((diagnostic) => diagnostic.severity === 'error')).toBe(false)
   }, 60_000)
 
-  it('uses Haura C original reach hand when a copied reach scene names a non-tenpai source turn', () => {
+  it('copies Haura C late hand from turn 14 to turn 8 in the documented direction', () => {
     const before = decodeMatch(lateReachSample).rounds[0]!
     const finalBefore = before.snapshots.at(-1)!
-    const originalReach = before.snapshots[finalBefore.rivers[0]![12]!.eventIndex]!
-    const originalCodes = originalReach.hands[0]!
-      .map((id) => originalReach.tiles[id]!.code)
+    const source = before.snapshots[finalBefore.rivers[0]![13]!.eventIndex]!
+    const sourceCodes = source.hands[0]!
+      .map((id) => source.tiles[id]!.code)
       .sort((a, b) => a - b)
     const result = executePaifuScript(lateReachSample, `KEEP_ONLY
 SCENE "対面リーチ直後_同一手牌"
-COPY SELF HAND FROM 8 TO 14
-REACH SELF ON AT 14
+COPY SELF HAND FROM 14 TO 8
+REACH SELF ON AT 8
 END
 SCENE "赤ドラ1枚_打点増"
 SET SELF HAND 1 0m
@@ -328,13 +328,13 @@ END`, { round: 0, event: before.events.length - 1, self: 0, seed: 20260811 })
     expect(result.sceneErrors).toEqual([])
     const scene = decodeMatch(result.output).rounds[1]!
     const final = scene.snapshots.at(-1)!
-    const turn14 = scene.snapshots[final.rivers[0]![13]!.eventIndex]!
-    const turn14Codes = turn14.hands[0]!
-      .map((id) => turn14.tiles[id]!.code)
+    const turn8 = scene.snapshots[final.rivers[0]![7]!.eventIndex]!
+    const turn8Codes = turn8.hands[0]!
+      .map((id) => turn8.tiles[id]!.code)
       .sort((a, b) => a - b)
-    expect(turn14Codes).toEqual(originalCodes)
+    expect(turn8Codes).toEqual(sourceCodes)
+    expect(final.rivers[0]![7]!.reach).toBe(true)
     expect(final.rivers[0]![12]!.reach).toBe(false)
-    expect(final.rivers[0]![13]!.reach).toBe(true)
     expect(scene.diagnostics.some((diagnostic) => diagnostic.severity === 'error')).toBe(false)
 
     const prompt = buildAiEditPrompt({
@@ -344,7 +344,15 @@ END`, { round: 0, event: before.events.length - 1, self: 0, seed: 20260811 })
       eventCount: before.events.length,
     })
     expect(prompt).toContain(`SELF / ${finalBefore.names[0]}: 13巡目`)
-    expect(prompt).toContain('SELFを別の席のリーチ巡目と取り違えない')
+    expect(prompt).toContain('COPY SELF HAND FROM 14 TO 8')
+    expect(prompt).toContain('FROM=残したいSELF牌姿の元巡目、TO=比較先のSELF巡目')
+
+    const reversed = executePaifuScript(lateReachSample, `KEEP_ONLY
+SCENE "逆方向"
+COPY SELF HAND FROM 8 TO 14
+REACH SELF ON AT 14
+END`, { round: 0, event: before.events.length - 1, self: 0, seed: 20260811 })
+    expect(reversed.sceneErrors[0]?.message).toContain('FROM 8は残したい聴牌形が存在する元巡目')
   }, 60_000)
 
   it('turns every later discard into tsumogiri when reach is moved earlier', () => {
@@ -490,10 +498,11 @@ describe('AI editing prompt', () => {
     expect(prompt).toContain('REACHとMELD_ADDは必要な聴牌形・手牌を実行時に自動補正')
     expect(prompt).toContain('REACH <席> ON BEFORE SELF RIVER <対象巡目>')
     expect(prompt).toContain('SELFのリーチ・聴牌時期を早める／遅らせる比較')
-    expect(prompt).toContain('必ず COPY SELF HAND FROM <元のリーチ巡目> TO <比較先巡目>')
+    expect(prompt).toContain('COPYの方向は必ず FROM → TO')
+    expect(prompt).toContain('必ず COPY SELF HAND FROM <残したい手牌の元巡目> TO <比較先巡目>')
     expect(prompt).toContain('REACH SELF ON ATだけの自動聴牌補正')
     expect(prompt).toContain('COPY SELF HAND を使う場合はCOPY自体が完成手牌を固定')
-    expect(prompt).toContain('現在河の [リーチ] が付いたSELF打牌位置を元のリーチ巡目')
+    expect(prompt).toContain('現在河の [リーチ] が付いたSELF打牌位置と、それ以降にツモ切りで維持された同一手牌はFROM候補')
     expect(prompt).toContain('SELF RIVER 10 9s(9索)')
     expect(prompt).toContain('REACH <相手席> ON BEFORE SELF RIVER 10')
     expect(prompt).toContain('下家のチー・ポン有無を優先的な比較軸')
