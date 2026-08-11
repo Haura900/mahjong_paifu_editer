@@ -1,4 +1,5 @@
-import { parseTenhouLog, readRawRef, refKey, writeRawRef } from './codec'
+import { getRoundSection, parseMeldString, parseTenhouLog, readRawRef, refKey, writeRawRef } from './codec'
+import { isTenpai } from './hand'
 import { decodeMatch, snapshotAt } from './replay'
 import { solveEdit } from './solver'
 import { fromMajiangTile, normalizeTile, sameTileKind, tileLabel, toMajiangTile } from './tile'
@@ -26,7 +27,7 @@ export const PAIFU_SCRIPT_SPEC = `牌譜編集スクリプト v1
 - SET URA <位置> <牌>              裏ドラ表示牌を差し替える。
 - SWAP <場所> WITH <場所>          2つの物理牌を交換する。場所の書式はSETの牌より前と同じ。
 - COPY <席> HAND FROM <巡目> TO <巡目>
-                                      コピー元の打牌後の手牌をコピー先の打牌後へ再現する。直前巡目は字牌1枚で崩し、再現後の手牌を固定する。
+                                      コピー元の打牌後の手牌をコピー先の打牌後へ再現する。直前巡目は字牌1枚で崩し、再現後の手牌を固定する。コピー元がリーチ巡目で直後に同巡目へのREACHがあれば、宣言移動も固定前に一括適用する。
 - MELD_ADD <席> PON <牌> FROM <捨てた席> RIVER <巡目>
                                       指定河牌を鳴いてポンを追加する。必要な対子は自動補正する。
 - MELD_ADD <席> CHI <牌1> <牌2> <牌3> FROM <捨てた席> RIVER <巡目>
@@ -493,6 +494,8 @@ interface TurnHandSnapshot {
   rawDiscardRef: RawRef
   incomingRef?: RawRef
   tsumogiri: boolean
+  reach: boolean
+  meldCount: number
 }
 
 function handAfterDiscard(log: TenhouLog, round: number, seat: Seat, turn: number): TurnHandSnapshot {
@@ -523,6 +526,8 @@ function handAfterDiscard(log: TenhouLog, round: number, seat: Seat, turn: numbe
     rawDiscardRef: river.rawRef,
     incomingRef: incoming?.tileId ? state.tiles[incoming.tileId]?.acquisitionRef : undefined,
     tsumogiri: river.tsumogiri,
+    reach: river.reach,
+    meldCount: state.melds[seat]!.length,
   }
 }
 
@@ -546,6 +551,70 @@ function chooseBreakHonor(log: TenhouLog, round: number, desired: TileCode[], in
     ?? (() => { throw new Error('直前巡目を崩すための未使用字牌がありません') })()
 }
 
+function carryCopiedReach(
+  log: TenhouLog,
+  round: number,
+  seat: Seat,
+  source: TurnHandSnapshot,
+  target: TurnHandSnapshot,
+  desired: TileCode[],
+  changes: AutoChange[],
+): void {
+  if (!source.reach) return
+  if (!isTenpai(desired, source.meldCount)) {
+    throw new Error('コピー元のリーチ手牌を聴牌として確認できません')
+  }
+  const stream = getRoundSection(log.log[round]!, 'discard', seat)
+  const targetIndex = target.rawDiscardRef.index
+  stream.forEach((item, index) => {
+    if (index === targetIndex || typeof item !== 'string' || !/^r(?:60|\d{2})$/.test(item)) return
+    const after = Number(item.slice(1))
+    stream[index] = after
+    changes.push({
+      id: `change-${changes.length + 1}`,
+      kind: 'automatic',
+      ref: { round, section: 'discard', seat, index },
+      before: item,
+      after,
+      reason: 'COPY HANDでコピー元のリーチをコピー先へ移すため、元の宣言を解除',
+    })
+  })
+  const before = stream[targetIndex]
+  if (before === undefined || (typeof before === 'string' && parseMeldString(before))) {
+    throw new Error('コピー先のリーチ宣言牌を設定できません')
+  }
+  const rawCode = typeof before === 'string' && before.startsWith('r') ? Number(before.slice(1)) : before
+  if (typeof rawCode !== 'number') throw new Error('コピー先のリーチ宣言牌を認識できません')
+  const after = `r${rawCode}`
+  stream[targetIndex] = after
+  changes.push({
+    id: `change-${changes.length + 1}`,
+    kind: 'automatic',
+    ref: { round, section: 'discard', seat, index: targetIndex },
+    before,
+    after,
+    reason: 'COPY HANDで再現した同一聴牌手を固定したまま、コピー元のリーチをコピー先へ移動',
+  })
+  for (let index = targetIndex + 1; index < stream.length; index += 1) {
+    const item = stream[index]!
+    if (typeof item === 'string') {
+      const meld = parseMeldString(item)
+      if (meld && meld.type !== 'ankan') throw new Error(`リーチ後の${meld.type}は維持できません`)
+      continue
+    }
+    if (item === 60) continue
+    stream[index] = 60
+    changes.push({
+      id: `change-${changes.length + 1}`,
+      kind: 'automatic',
+      ref: { round, section: 'discard', seat, index },
+      before: item,
+      after: 60,
+      reason: 'COPY HANDで移したリーチ後の手牌交換を防ぐため、後続打牌をツモ切りへ補正',
+    })
+  }
+}
+
 function copyHandAtTurn(
   log: TenhouLog,
   round: number,
@@ -554,6 +623,7 @@ function copyHandAtTurn(
   toTurn: number,
   activeLocks: Set<string>,
   seed: number,
+  carryReach: boolean,
 ): { output: TenhouLog; changes: AutoChange[]; signature: string[] } {
   if (toTurn < 2) throw new Error('コピー先は、直前巡目を作れる2巡目以降を指定してください')
   const source = handAfterDiscard(log, round, seat, fromTurn)
@@ -637,6 +707,7 @@ function copyHandAtTurn(
     }
     if (!remaining.length) {
       if (surplus.length) throw new Error('コピー先手牌の枚数が一致しません')
+      if (carryReach) carryCopiedReach(output, round, seat, source, target, desired, changes)
       const signature = target.entries
         .map((entry) => `${entry.key}=${entry.code}`)
         .sort()
@@ -706,6 +777,11 @@ function executeActions(
         changes.push(...result.changes)
       } else if (action.kind === 'copy-hand') {
         const actor = resolveSeat(action.actor, self)
+        const next = actions[index + 1]
+        const carryReach = next?.kind === 'reach'
+          && next.enabled
+          && next.turn === action.toTurn
+          && resolveSeat(next.actor, self) === actor
         const result = copyHandAtTurn(
           output,
           round,
@@ -714,6 +790,7 @@ function executeActions(
           action.toTurn,
           activeLocks,
           seed,
+          carryReach,
         )
         output = result.output
         changes.push(...result.changes)

@@ -289,6 +289,26 @@ describe('LOCK SELF HAND ALL', () => {
     expect(after.diagnostics.some((diagnostic) => diagnostic.severity === 'error')).toBe(false)
   }, 60_000)
 
+  it('atomically carries a copied reach hand to turn 14 before locking it', () => {
+    const before = decodeMatch(lateReachSample).rounds[0]!
+    const result = executePaifuScript(lateReachSample, `KEEP_ONLY
+SCENE "対面リーチ直後_同一手牌"
+COPY SELF HAND FROM 8 TO 14
+REACH SELF ON AT 14
+END`, { round: 0, event: before.events.length - 1, self: 2, seed: 20260811 })
+
+    expect(result.sceneErrors).toEqual([])
+    const scene = decodeMatch(result.output).rounds[1]!
+    const final = scene.snapshots.at(-1)!
+    expect(final.rivers[2]![7]!.reach).toBe(false)
+    expect(final.rivers[2]![13]!.reach).toBe(true)
+    expect(result.changes.some((change) =>
+      change.reason.includes('同一聴牌手を固定したまま'))).toBe(true)
+    expect(result.changes.some((change) =>
+      change.reason === '門前・聴牌・持ち点を確認してリーチを設定')).toBe(false)
+    expect(scene.diagnostics.some((diagnostic) => diagnostic.severity === 'error')).toBe(false)
+  }, 60_000)
+
   it('turns every later discard into tsumogiri when reach is moved earlier', () => {
     const round = decodeMatch(lateReachSample).rounds[0]!
     const result = executePaifuScript(lateReachSample, `KEEP_ONLY
