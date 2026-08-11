@@ -1524,6 +1524,26 @@ function applyReach(
     after: stream[index]!,
     reason: '門前・聴牌・持ち点を確認してリーチを設定',
   })
+  for (let futureIndex = index + 1; futureIndex < stream.length; futureIndex += 1) {
+    const item = stream[futureIndex]!
+    if (typeof item === 'string') {
+      const meld = parseMeldString(item)
+      if (meld && meld.type !== 'ankan') {
+        return `リーチ後の${meldLabelJa(meld.type)}は維持できません`
+      }
+      continue
+    }
+    if (item === 60) continue
+    stream[futureIndex] = 60
+    changes.push({
+      id: `change-${changes.length + 1}`,
+      kind: 'automatic',
+      ref: { round: request.round, section: 'discard', seat: request.actor, index: futureIndex },
+      before: item,
+      after: 60,
+      reason: 'リーチ成立後の手牌交換を防ぐため、後続打牌をツモ切りへ補正',
+    })
+  }
   return undefined
 }
 

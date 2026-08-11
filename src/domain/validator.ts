@@ -79,6 +79,15 @@ export function validateState(
       if (handSize !== expected) {
         result.push(issue(state, 'HAND_SIZE_AFTER_DISCARD', `打牌後の手牌が${handSize}枚です（期待値${expected}）`, 'error', seat))
       }
+      if (state.reach[seat] && !event.tsumogiri) {
+        result.push(issue(
+          state,
+          'REACH_HAND_CHANGE',
+          'リーチ成立後は手牌を入れ替えず、ツモ牌をそのまま切る必要があります',
+          'error',
+          seat,
+        ))
+      }
       if (event.tsumogiri && state.lastDraw?.tileId !== event.tileId) {
         result.push(issue(state, 'INVALID_TSUMOGIRI', 'ツモ切り牌が直前のツモ牌と一致しません', 'error', seat))
       }

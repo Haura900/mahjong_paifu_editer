@@ -260,6 +260,39 @@ describe('LOCK SELF HAND ALL', () => {
     )).toThrow('固定')
   }, 60_000)
 
+  it('turns every later discard into tsumogiri when reach is moved earlier', () => {
+    const round = decodeMatch(lateReachSample).rounds[0]!
+    const result = executePaifuScript(lateReachSample, `KEEP_ONLY
+SCENE "8巡目追いかけ_赤5m保持"
+SET SELF DRAW 5 0m
+SET SELF RIVER 5 1z
+REACH TOIMEN OFF
+REACH TOIMEN ON BEFORE SELF RIVER 8
+REACH SELF OFF
+REACH SELF ON AT 8
+END`, { round: 0, event: round.events.length - 1, self: 2, seed: 20260811 })
+
+    expect(result.sceneErrors).toEqual([])
+    const scene = decodeMatch(result.output).rounds[1]!
+    const final = scene.snapshots.at(-1)!
+    for (const seat of [0, 2] as Seat[]) {
+      const reach = final.rivers[seat]!.find((river) => river.reach)
+      expect(reach).toBeDefined()
+      expect(final.rivers[seat]!
+        .filter((river) => river.eventIndex > reach!.eventIndex)
+        .every((river) => river.tsumogiri)).toBe(true)
+    }
+    expect(scene.diagnostics.some((diagnostic) => diagnostic.code === 'REACH_HAND_CHANGE')).toBe(false)
+  }, 60_000)
+
+  it('diagnoses a raw hand discard after reach as a rule violation', () => {
+    const invalid = structuredClone(lateReachSample)
+    invalid.log[0]![6][7] = 'r60'
+    invalid.log[0]![6][12] = 16
+    expect(decodeMatch(invalid).rounds[0]!.diagnostics.some((diagnostic) =>
+      diagnostic.code === 'REACH_HAND_CHANGE' && diagnostic.seat === 0)).toBe(true)
+  })
+
   it('is idempotent and includes every occupied hand source plus the current draw', () => {
     const round = decodeMatch(sample).rounds[0]!
     const event = round.snapshots.findIndex((state) => state.lastDraw?.seat === 0)
