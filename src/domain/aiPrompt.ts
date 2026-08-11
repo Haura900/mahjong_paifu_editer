@@ -44,6 +44,14 @@ function meldText(state: RoundState, seat: Seat): string {
   return melds.map((meld) => `${meld.type}(${tileList(meld.codes)})`).join(' / ')
 }
 
+function reachSourceLine(state: RoundState, self: Seat, seat: Seat): string {
+  const relative = ((seat - self + 4) % 4) as 0 | 1 | 2 | 3
+  const turns = state.rivers[seat]!
+    .map((item, index) => item.reach ? index + 1 : undefined)
+    .filter((turn): turn is number => turn !== undefined)
+  return `- ${RELATIVE_NAMES[relative]} / ${state.names[seat]}: ${turns.length ? `${turns.join('・')}巡目` : 'リーチなし'}`
+}
+
 function decisionTimeline(state: RoundState, self: Seat): string {
   const ownRiver = state.rivers[self]!
   if (!ownRiver.length) return '自分の河がないため、基準にできる打牌はありません。'
@@ -86,6 +94,7 @@ export function buildAiEditPrompt({
   const spare = spareHonorTiles(state, self)
     .map((item) => `${tile(item.code)} x${item.count}`)
     .join(' ')
+  const reachSources = seatOrder.map((seat) => reachSourceLine(state, self, seat)).join('\n')
 
   const board = seatOrder.map((seat) => {
     const relative = ((seat - self + 4) % 4) as 0 | 1 | 2 | 3
@@ -156,6 +165,10 @@ ${instruction.trim()}
 # 自分の打牌判断時点
 以下は各SELF河牌を切る直前に、相手が何枚目まで河へ切っていたかを示す。危険度変更は必ず対象行より前に成立させる。
 ${decisionTimeline(state, self)}
+
+# COPY用の元リーチ巡目（現在の席対応）
+${reachSources}
+- COPYと直後のREACHでリーチ手を移す場合、FROMには必ず同じ席の上記リーチ巡目を使う。SELFを別の席のリーチ巡目と取り違えない。
 
 # 現在表示している局面
 - 局: ${roundLabel(state.roundNumber)} ${state.honba}本場
