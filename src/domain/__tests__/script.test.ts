@@ -9,6 +9,27 @@ import { toMajiangTile } from '../tile'
 import type { RoundState, Seat } from '../types'
 
 const sample = parseTenhouLog(readFileSync(resolve(process.cwd(), 'sample.txt'), 'utf8'))
+const lateReachSample = parseTenhouLog({
+  title: ['', ''],
+  name: ['はうらC', 'あっぴん1210', 'エンペラー7', 'カネマロ'],
+  rule: { disp: '四南喰赤', aka: 1, aka51: 1, aka52: 1, aka53: 1 },
+  log: [[
+    [0, 0, 0], [25000, 25000, 25000, 25000], [11], [41],
+    [34, 25, 33, 23, 44, 17, 24, 25, 35, 17, 21, 31, 36],
+    [42, 44, 27, 42, 39, 31, 21, 39, 34, 42, 16, 19, 35, 33, 24],
+    [60, 21, 44, 60, 60, 44, 60, 60, 31, 31, 42, 60, 'r16', 60, 60],
+    [23, 52, 21, 46, 38, 22, 19, 41, 13, 36, 24, 47, 53],
+    [33, 45, 15, 43, 26, 26, 16, 18, 46, 42, 46, 29, 15, 21, 41],
+    [19, 47, 46, 60, 45, 41, 13, 60, 36, 60, 22, 15, 16, 33, 24],
+    [19, 12, 39, 31, 36, 13, 14, 29, 28, 32, 32, 29, 18],
+    [28, 19, 17, 22, 15, 12, 43, 27, 14, 45, 18, 41, 17, 37, 26],
+    [39, 36, 19, 60, 60, 31, 60, 'r12', 60, 60, 60, 60, 60, 60, 60],
+    [22, 22, 24, 51, 33, 37, 31, 37, 44, 47, 11, 36, 11],
+    [14, 13, 26, 45, 45, 44, 38, 43, 34, 34, 16, 27, 25, 13],
+    [47, 44, 37, 60, 60, 60, 22, 60, 31, 22, 11, 11, 16, 33],
+    ['和了', [5900, 0, -3900, 0], [0, 2]],
+  ]],
+})
 
 function handSignature(state: RoundState, seat: Seat): string[] {
   return state.hands[seat]!.map((id) => {
@@ -201,6 +222,43 @@ describe('LOCK SELF HAND ALL', () => {
       expect(() => parsePaifuScript(invalid)).toThrow('LOCKの正式構文')
     }
   })
+
+  it('parses a hand copy between discard turns', () => {
+    expect(parsePaifuScript('COPY SELF HAND FROM 13 TO 9').actions[0]).toMatchObject({
+      kind: 'copy-hand', actor: 'SELF', fromTurn: 13, toTurn: 9,
+    })
+    expect(() => parsePaifuScript('COPY SELF HAND 13 TO 9')).toThrow('COPYの正式構文')
+    expect(() => parsePaifuScript('COPY SELF HAND FROM 9 TO 9')).toThrow('別にしてください')
+  })
+
+  it('copies the late reach hand to turn 9, breaks turn 8, locks it, and permits reach', () => {
+    const before = decodeMatch(lateReachSample).rounds[0]!
+    const sourceCodes = before.snapshots[before.snapshots.at(-1)!.rivers[0]![12]!.eventIndex]!
+      .hands[0]!.map((id) => before.snapshots.at(-1)!.tiles[id]!.code)
+      .sort((a, b) => a - b)
+    const result = executePaifuScript(
+      lateReachSample,
+      'KEEP_ONLY\nCOPY SELF HAND FROM 13 TO 9\nREACH SELF ON AT 9',
+      { round: 0, event: before.events.length - 1, self: 0, seed: 20260811 },
+    )
+    const after = decodeMatch(result.output).rounds[0]!
+    const final = after.snapshots.at(-1)!
+    const turn9 = after.snapshots[final.rivers[0]![8]!.eventIndex]!
+    const turn8 = after.snapshots[final.rivers[0]![7]!.eventIndex]!
+    const codes = (state: RoundState) => state.hands[0]!
+      .map((id) => state.tiles[id]!.code)
+      .sort((a, b) => a - b)
+
+    expect(codes(turn9)).toEqual(sourceCodes)
+    expect(codes(turn8)).not.toEqual(sourceCodes)
+    expect(final.rivers[0]![8]!.reach).toBe(true)
+    expect(final.rivers[0]![12]!.reach).toBe(false)
+    expect(() => executePaifuScript(
+      lateReachSample,
+      'KEEP_ONLY\nCOPY SELF HAND FROM 13 TO 9\nSET SELF DRAW 9 1m',
+      { round: 0, event: before.events.length - 1, self: 0, seed: 20260811 },
+    )).toThrow('固定')
+  }, 60_000)
 
   it('is idempotent and includes every occupied hand source plus the current draw', () => {
     const round = decodeMatch(sample).rounds[0]!

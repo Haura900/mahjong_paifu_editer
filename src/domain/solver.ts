@@ -1480,6 +1480,20 @@ function applyReach(
   if (reachState.scores[request.actor]! < 1000) return '1000点未満のためリーチ棒を支払えません'
   if (typeof before === 'string' && before.startsWith('r')) return undefined
 
+  stream.forEach((item, existingIndex) => {
+    if (existingIndex === index || typeof item !== 'string' || !/^r(?:60|\d{2})$/.test(item)) return
+    const replacement = Number(item.slice(1))
+    stream[existingIndex] = replacement
+    changes.push({
+      id: `change-${changes.length + 1}`,
+      kind: 'automatic',
+      ref: { round: request.round, section: 'discard', seat: request.actor, index: existingIndex },
+      before: item,
+      after: replacement,
+      reason: '同じ席のリーチ宣言を指定巡目へ移すため、元の宣言を解除',
+    })
+  })
+
   let handCodes = reachState.hands[request.actor]!.map((id) => reachState.tiles[id]!.code)
   if (!isTenpai(handCodes, reachState.melds[request.actor]!.length)) {
     const target = nearestTenpaiCodes(handCodes, reachState.melds[request.actor]!.length)

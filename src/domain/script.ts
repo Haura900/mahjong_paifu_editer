@@ -1,7 +1,7 @@
 import { parseTenhouLog, refKey } from './codec'
 import { decodeMatch, snapshotAt } from './replay'
 import { solveEdit } from './solver'
-import { fromMajiangTile, sameTileKind, tileLabel, toMajiangTile } from './tile'
+import { fromMajiangTile, normalizeTile, sameTileKind, tileLabel, toMajiangTile } from './tile'
 import type {
   AutoChange,
   RawRef,
@@ -24,6 +24,8 @@ export const PAIFU_SCRIPT_SPEC = `牌譜編集スクリプト v1
 - SET DORA <位置> <牌>             ドラ表示牌を差し替える。
 - SET URA <位置> <牌>              裏ドラ表示牌を差し替える。
 - SWAP <場所> WITH <場所>          2つの物理牌を交換する。場所の書式はSETの牌より前と同じ。
+- COPY <席> HAND FROM <巡目> TO <巡目>
+                                      コピー元の打牌後の手牌をコピー先の打牌後へ再現する。直前巡目は字牌1枚で崩し、再現後の手牌を固定する。
 - MELD_ADD <席> PON <牌> FROM <捨てた席> RIVER <巡目>
                                       指定河牌を鳴いてポンを追加する。必要な対子は自動補正する。
 - MELD_ADD <席> CHI <牌1> <牌2> <牌3> FROM <捨てた席> RIVER <巡目>
@@ -103,12 +105,20 @@ interface ReachAction {
   line: number
 }
 
+interface CopyHandAction {
+  kind: 'copy-hand'
+  actor: string
+  fromTurn: number
+  toTurn: number
+  line: number
+}
+
 interface LockSelfHandAllAction {
   kind: 'lock-self-hand-all'
   line: number
 }
 
-type ScriptAction = SetAction | SwapAction | MeldAddAction | MeldRemoveAction | ReachAction | LockSelfHandAllAction
+type ScriptAction = SetAction | SwapAction | CopyHandAction | MeldAddAction | MeldRemoveAction | ReachAction | LockSelfHandAllAction
 
 interface Scene {
   name: string
@@ -237,6 +247,26 @@ export function parsePaifuScript(input: string): ParsedPaifuScript {
         const second = parseLocation(tokens.slice(withIndex + 1), line)
         if (tokens.length !== withIndex + second.consumed + 1) scriptError(line, 'SWAP命令の末尾に余分な値があります')
         target.push({ kind: 'swap', first: first.location, second: second.location, line })
+      } else if (tokens[0]?.toUpperCase() === 'COPY') {
+        if (
+          tokens.length !== 7
+          || tokens[2]?.toUpperCase() !== 'HAND'
+          || tokens[3]?.toUpperCase() !== 'FROM'
+          || tokens[5]?.toUpperCase() !== 'TO'
+          || !tokens[1]
+        ) {
+          scriptError(line, 'COPYの正式構文は「COPY <席> HAND FROM <巡目> TO <巡目>」です')
+        }
+        const fromTurn = parseIndex(tokens[4], line)
+        const toTurn = parseIndex(tokens[6], line)
+        if (fromTurn === toTurn) scriptError(line, 'コピー元巡目とコピー先巡目は別にしてください')
+        target.push({
+          kind: 'copy-hand',
+          actor: tokens[1]!.toUpperCase(),
+          fromTurn,
+          toTurn,
+          line,
+        })
       } else if (tokens[0]?.toUpperCase() === 'MELD_ADD') {
         const actor = tokens[1]?.toUpperCase()
         const meldType = tokens[2]?.toLowerCase()
@@ -403,6 +433,21 @@ function assertSelfHandInvariant(
   }
 }
 
+function assertTurnHandInvariant(
+  log: TenhouLog,
+  round: number,
+  seat: Seat,
+  turn: number,
+  expected: string[],
+): void {
+  const actual = handAfterDiscard(log, round, seat, turn).entries
+    .map((entry) => `${entry.key}=${entry.code}`)
+    .sort()
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    throw new Error(`COPY HANDで固定した${turn}巡目の手牌を維持できません`)
+  }
+}
+
 function solveScriptEdit(
   log: TenhouLog,
   request: Parameters<typeof solveEdit>[1],
@@ -440,6 +485,147 @@ function applySet(
   return { output: result.output, changes: result.changes }
 }
 
+interface TurnHandSnapshot {
+  event: number
+  entries: Array<{ ref: RawRef; key: string; code: TileCode }>
+  discardedRef: RawRef
+  incomingRef?: RawRef
+}
+
+function handAfterDiscard(log: TenhouLog, round: number, seat: Seat, turn: number): TurnHandSnapshot {
+  const decodedRound = decodeMatch(log).rounds[round]
+  if (!decodedRound) throw new Error('指定された局がありません')
+  const finalState = decodedRound.snapshots.at(-1)!
+  const river = finalState.rivers[seat]![turn - 1]
+  if (!river) throw new Error(`${finalState.names[seat]}の${turn}巡目の打牌がありません`)
+  const state = snapshotAt(decodedRound, river.eventIndex)
+  const discarded = finalState.tiles[river.tileId]
+  if (!discarded) throw new Error(`${turn}巡目の打牌を物理牌まで追跡できません`)
+  const priorDiscardEvent = turn > 1 ? finalState.rivers[seat]![turn - 2]?.eventIndex ?? -1 : -1
+  const incoming = decodedRound.events
+    .filter((candidate) =>
+      (candidate.type === 'draw' || candidate.type === 'rinshan-draw')
+      && candidate.actor === seat
+      && candidate.index > priorDiscardEvent
+      && candidate.index < river.eventIndex
+      && candidate.tileId)
+    .at(-1)
+  return {
+    event: river.eventIndex,
+    entries: state.hands[seat]!.map((id) => {
+      const tile = state.tiles[id]!
+      return { ref: tile.acquisitionRef, key: refKey(tile.acquisitionRef), code: tile.code }
+    }),
+    discardedRef: discarded.acquisitionRef,
+    incomingRef: incoming?.tileId ? state.tiles[incoming.tileId]?.acquisitionRef : undefined,
+  }
+}
+
+function removeOneCode(codes: TileCode[], code: TileCode): boolean {
+  const index = codes.indexOf(code)
+  if (index < 0) return false
+  codes.splice(index, 1)
+  return true
+}
+
+function chooseBreakHonor(log: TenhouLog, round: number, desired: TileCode[], incoming: TileCode): TileCode {
+  const finalState = decodeMatch(log).rounds[round]!.snapshots.at(-1)!
+  const counts = new Map<number, number>()
+  Object.values(finalState.tiles).forEach((tile) => {
+    const kind = normalizeTile(tile.code)
+    counts.set(kind, (counts.get(kind) ?? 0) + 1)
+  })
+  const honors = [41, 42, 43, 44, 45, 46, 47] as TileCode[]
+  const available = honors.filter((code) => code !== incoming && (counts.get(normalizeTile(code)) ?? 0) < 4)
+  return available.find((code) => !desired.includes(code)) ?? available[0]
+    ?? (() => { throw new Error('直前巡目を崩すための未使用字牌がありません') })()
+}
+
+function copyHandAtTurn(
+  log: TenhouLog,
+  round: number,
+  seat: Seat,
+  fromTurn: number,
+  toTurn: number,
+  activeLocks: Set<string>,
+  seed: number,
+): { output: TenhouLog; changes: AutoChange[]; signature: string[] } {
+  if (toTurn < 2) throw new Error('コピー先は、直前巡目を作れる2巡目以降を指定してください')
+  const source = handAfterDiscard(log, round, seat, fromTurn)
+  let target = handAfterDiscard(log, round, seat, toTurn)
+  const desired = source.entries.map((entry) => entry.code).sort((a, b) => a - b)
+  if (source.entries.length !== target.entries.length) {
+    throw new Error('副露数が異なる巡目間では手牌をコピーできません')
+  }
+  if (!target.incomingRef) throw new Error(`${toTurn}巡目に通常のツモがないため、直前巡目と異なる手牌を作れません`)
+  const incomingKey = refKey(target.incomingRef)
+  if (incomingKey === refKey(target.discardedRef)) {
+    throw new Error(`${toTurn}巡目がツモ切りのため、直前巡目だけを字牌で崩せません`)
+  }
+
+  const incomingCurrent = target.entries.find((entry) => entry.key === incomingKey)?.code
+  if (!incomingCurrent) throw new Error(`${toTurn}巡目のツモ牌が打牌後の手牌にありません`)
+  const incomingDesired = desired.includes(incomingCurrent) ? incomingCurrent : desired[0]!
+  const breakHonor = chooseBreakHonor(log, round, desired, incomingDesired)
+  let output = log
+  const changes: AutoChange[] = []
+
+  let applied = applySet(
+    output,
+    round,
+    target.event,
+    target.discardedRef,
+    breakHonor,
+    activeLocks,
+    seed,
+  )
+  output = applied.output
+  changes.push(...applied.changes)
+
+  target = handAfterDiscard(output, round, seat, toTurn)
+  const incomingEntry = target.entries.find((entry) => entry.key === incomingKey)
+  if (!incomingEntry) throw new Error('コピー先巡目のツモ牌を差替え後に追跡できません')
+  applied = applySet(output, round, target.event, incomingEntry.ref, incomingDesired, activeLocks, seed)
+  output = applied.output
+  changes.push(...applied.changes)
+  activeLocks.add(incomingKey)
+
+  for (let step = 0; step <= desired.length; step += 1) {
+    target = handAfterDiscard(output, round, seat, toTurn)
+    const remaining = [...desired]
+    const unlocked: typeof target.entries = []
+    for (const entry of target.entries) {
+      if (!activeLocks.has(entry.key)) {
+        unlocked.push(entry)
+        continue
+      }
+      if (!removeOneCode(remaining, entry.code)) {
+        throw new Error('固定済みのコピー先手牌がコピー元の牌姿と競合しています')
+      }
+    }
+    const surplus: typeof target.entries = []
+    for (const entry of unlocked) {
+      if (removeOneCode(remaining, entry.code)) activeLocks.add(entry.key)
+      else surplus.push(entry)
+    }
+    if (!remaining.length) {
+      if (surplus.length) throw new Error('コピー先手牌の枚数が一致しません')
+      const signature = target.entries
+        .map((entry) => `${entry.key}=${entry.code}`)
+        .sort()
+      return { output, changes, signature }
+    }
+    const entry = surplus[0]
+    const code = remaining[0]
+    if (!entry || !code) throw new Error('コピー元の手牌をコピー先へ割り当てられません')
+    applied = applySet(output, round, target.event, entry.ref, code, activeLocks, seed + step + 1)
+    output = applied.output
+    changes.push(...applied.changes)
+    activeLocks.add(entry.key)
+  }
+  throw new Error('手牌コピーの差替え回数が上限を超えました')
+}
+
 function executeActions(
   input: TenhouLog,
   round: number,
@@ -471,6 +657,7 @@ function executeActions(
   const changes: AutoChange[] = []
   const activeLocks = new Set(lockedRefs)
   let handInvariant: string[] | undefined
+  const turnHandInvariants: Array<{ seat: Seat; turn: number; signature: string[] }> = []
 
   actions.forEach((action, index) => {
     try {
@@ -494,6 +681,20 @@ function executeActions(
         result = applySet(output, round, event, second!, firstCode, activeLocks, seed)
         output = result.output
         changes.push(...result.changes)
+      } else if (action.kind === 'copy-hand') {
+        const actor = resolveSeat(action.actor, self)
+        const result = copyHandAtTurn(
+          output,
+          round,
+          actor,
+          action.fromTurn,
+          action.toTurn,
+          activeLocks,
+          seed,
+        )
+        output = result.output
+        changes.push(...result.changes)
+        turnHandInvariants.push({ seat: actor, turn: action.toTurn, signature: result.signature })
       } else if (action.kind === 'meld-add') {
         const actor = resolveSeat(action.actor, self)
         const target = resolveSeat(action.source.seat, self)
@@ -565,6 +766,9 @@ function executeActions(
         changes.push(...result.changes)
       }
       assertSelfHandInvariant(output, round, event, self, handInvariant)
+      turnHandInvariants.forEach((invariant) => {
+        assertTurnHandInvariant(output, round, invariant.seat, invariant.turn, invariant.signature)
+      })
     } catch (error) {
       throw new Error(`${action.line}行目: ${error instanceof Error ? error.message : String(error)}`)
     }
