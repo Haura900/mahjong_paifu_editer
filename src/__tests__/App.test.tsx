@@ -8,7 +8,6 @@ const sampleText = readFileSync(resolve(process.cwd(), 'sample.txt'), 'utf8')
 
 describe('browser-facing editor workflow', () => {
   beforeEach(() => {
-    localStorage.clear()
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,
       text: () => Promise.resolve(sampleText),
@@ -71,11 +70,11 @@ describe('browser-facing editor workflow', () => {
   it('opens compatible JSON in a copyable text box while retaining file save', async () => {
     render(<App />)
     expect(await screen.findByText(/全 11 局/)).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /天鳳URL・互換JSON/ }))
+    fireEvent.click(screen.getByRole('button', { name: /互換JSONをコピー/ }))
     const textbox = await screen.findByRole('textbox', { name: '編集済み牌譜JSON' })
     expect(() => JSON.parse((textbox as HTMLTextAreaElement).value)).not.toThrow()
-    expect(screen.getByRole('button', { name: /JSONファイルに保存/ })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /JSONをコピー/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /ファイルにも保存/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /クリップボードへコピー/ })).toBeInTheDocument()
   })
 
   it('builds an AI prompt from the visible table and user instruction', async () => {
@@ -128,36 +127,13 @@ END
     expect(container.querySelector('.player-bottom .player-name')).toHaveTextContent('はうらC')
     expect(screen.getByRole('checkbox', { name: '下に固定' })).toBeChecked()
 
-    fireEvent.click(screen.getByRole('button', { name: /天鳳URL・互換JSON/ }))
-    const dialog = await screen.findByRole('dialog', { name: /天鳳URL・互換JSON/ })
+    fireEvent.click(screen.getByRole('button', { name: /互換JSONをコピー/ }))
+    const dialog = await screen.findByRole('dialog', { name: /JSONをコピー/ })
     expect(dialog).toHaveTextContent('分析視点: はうらC（東1局では南家）')
-    expect(dialog).toHaveTextContent('席番号 tw=1 をURLの # より前へ入れました')
-    const tenhouUrl = (screen.getByRole('textbox', { name: '視点込み天鳳URL' }) as HTMLTextAreaElement).value
-    expect(tenhouUrl).toMatch(/^https:\/\/tenhou\.net\/5\/\?tw=1#json=/)
-    expect(JSON.parse(decodeURIComponent(tenhouUrl.split('#json=')[1]!)).name[1]).toBe('はうらC')
+    expect(dialog).toHaveTextContent('東1局がこのJSONから削除されていても')
     const copied = JSON.parse((screen.getByRole('textbox', { name: '編集済み牌譜JSON' }) as HTMLTextAreaElement).value)
     expect(copied.log).toHaveLength(11)
     expect(copied.name[1]).toBe('はうらC')
-  })
-
-  it('restores the analysis seat by player name when another paifu is opened', async () => {
-    const first = render(<App />)
-    expect(await screen.findByText(/全 11 局/)).toBeInTheDocument()
-    fireEvent.change(screen.getByRole('combobox', { name: '分析ユーザー' }), { target: { value: '1' } })
-    expect(localStorage.getItem('mahjong-paifu-editor:analysis-player-name')).toBe('はうらC')
-    first.unmount()
-
-    const reordered = JSON.parse(sampleText) as { name: string[] }
-    reordered.name = [reordered.name[0]!, reordered.name[2]!, reordered.name[3]!, reordered.name[1]!]
-    vi.mocked(fetch).mockResolvedValue({
-      ok: true,
-      text: () => Promise.resolve(JSON.stringify(reordered)),
-    } as Response)
-
-    render(<App />)
-    expect(await screen.findByText(/全 11 局/)).toBeInTheDocument()
-    expect(screen.getByRole('combobox', { name: '分析ユーザー' })).toHaveValue('3')
-    expect(screen.getByRole('checkbox', { name: '下に固定' })).toBeChecked()
   })
 
   it('copies the selected round and repeats the same round on paste', async () => {

@@ -42,7 +42,6 @@ import {
 import { solveEdit } from './domain/solver'
 import { buildAiEditPrompt } from './domain/aiPrompt'
 import { executePaifuScript } from './domain/script'
-import { buildTenhouJsonUrl, findAnalysisSeatByName } from './domain/tenhouUrl'
 import type {
   EditorProject,
   EditQueueEntry,
@@ -61,21 +60,12 @@ import { TableView, type Selection } from './components/TableView'
 import { Timeline } from './components/Timeline'
 import { readFileText, saveText } from './lib/files'
 
-const ANALYSIS_PLAYER_NAME_KEY = 'mahjong-paifu-editor:analysis-player-name'
-
 export function App() {
   const [project, setProject] = useState<EditorProject>()
   const [round, setRound] = useState(0)
   const [event, setEvent] = useState(0)
   const [viewpoint, setViewpoint] = useState<Seat>(0)
   const [analysisSeat, setAnalysisSeat] = useState<Seat>()
-  const [lastAnalysisPlayerName, setLastAnalysisPlayerName] = useState<string | undefined>(() => {
-    try {
-      return localStorage.getItem(ANALYSIS_PLAYER_NAME_KEY) ?? undefined
-    } catch {
-      return undefined
-    }
-  })
   const [viewpointLocked, setViewpointLocked] = useState(false)
   const [selectedSeat, setSelectedSeat] = useState<Seat>(0)
   const [selection, setSelection] = useState<Selection>()
@@ -116,61 +106,33 @@ export function App() {
     setMeldPlanRequest(undefined)
   }, [])
 
-  const selectAnalysisPlayer = useCallback((seat: Seat | undefined, names: string[]) => {
-    setAnalysisSeat(seat)
-    setViewpointLocked(seat !== undefined)
-    if (seat === undefined) {
-      setLastAnalysisPlayerName(undefined)
-      try {
-        localStorage.removeItem(ANALYSIS_PLAYER_NAME_KEY)
-      } catch {
-        // The current selection still works if browser storage is unavailable.
-      }
-      return
-    }
-    setViewpoint(seat)
-    const name = names[seat]
-    if (!name) return
-    setLastAnalysisPlayerName(name)
-    try {
-      localStorage.setItem(ANALYSIS_PLAYER_NAME_KEY, name)
-    } catch {
-      // The current selection still works if browser storage is unavailable.
-    }
-  }, [])
-
   const loadLog = useCallback((log: TenhouLog, label: string) => {
     const decoded = decodeMatch(log)
-    const restoredAnalysisSeat = findAnalysisSeatByName(decoded.raw.name, lastAnalysisPlayerName)
-    const defaultViewpoint = restoredAnalysisSeat ?? decoded.rounds[0]?.snapshots[0]?.dealer ?? 0
     clearEditPipeline()
     setCurrentProject(createProject(decoded.raw))
     setRound(0)
     setEvent(Math.max(0, (decoded.rounds[0]?.events.length ?? 1) - 1))
-    setViewpoint(defaultViewpoint)
-    setAnalysisSeat(restoredAnalysisSeat)
-    setViewpointLocked(restoredAnalysisSeat !== undefined)
+    setViewpoint(decoded.rounds[0]?.snapshots[0]?.dealer ?? 0)
+    setAnalysisSeat(undefined)
+    setViewpointLocked(false)
     setRoundClipboard(undefined)
     setSelectedSeat(decoded.rounds[0]?.snapshots[0]?.dealer ?? 0)
     setSelection(undefined)
     setError(undefined)
     setNotice(`${label}を読み込みました（${decoded.rounds.length}局）`)
-  }, [clearEditPipeline, lastAnalysisPlayerName, setCurrentProject])
+  }, [clearEditPipeline, setCurrentProject])
 
   const loadText = useCallback((text: string, label: string, projectFile = false) => {
     try {
       if (projectFile || (text.includes('"format"') && text.includes('mahjong-paifu-editor-project'))) {
         const loaded = parseProject(text)
         const loadedMatch = decodeMatch(loaded.current)
-        const restoredAnalysisSeat = findAnalysisSeatByName(loadedMatch.raw.name, lastAnalysisPlayerName)
-        const defaultViewpoint = restoredAnalysisSeat ?? loadedMatch.rounds[0]?.snapshots[0]?.dealer ?? 0
         clearEditPipeline()
         setCurrentProject(loaded)
         setRound(0)
         setEvent(Math.max(0, (loadedMatch.rounds[0]?.events.length ?? 1) - 1))
-        setAnalysisSeat(restoredAnalysisSeat)
-        setViewpoint(defaultViewpoint)
-        setViewpointLocked(restoredAnalysisSeat !== undefined)
+        setAnalysisSeat(undefined)
+        setViewpointLocked(false)
         setRoundClipboard(undefined)
         setSelection(undefined)
         setError(undefined)
@@ -185,7 +147,7 @@ export function App() {
         setError(caught instanceof Error ? caught.message : String(caught))
       }
     }
-  }, [clearEditPipeline, lastAnalysisPlayerName, loadLog, setCurrentProject])
+  }, [clearEditPipeline, loadLog, setCurrentProject])
 
   useEffect(() => {
     if (sampleLoaded.current) return
@@ -213,16 +175,11 @@ export function App() {
     [processingEntries],
   )
   const exportedJson = useMemo(() => project ? encodeTenhouLog(project.current) : '', [project])
-  const tenhouUrl = useMemo(
-    () => analysisSeat === undefined ? undefined : buildTenhouJsonUrl(exportedJson, analysisSeat),
-    [analysisSeat, exportedJson],
-  )
   const analysisProfile = useMemo(() => {
     if (!decoded || analysisSeat === undefined) return undefined
     return {
       name: decoded.raw.name[analysisSeat]!,
       eastOneWind: seatName(analysisSeat),
-      seat: analysisSeat,
     }
   }, [analysisSeat, decoded])
 
@@ -517,23 +474,6 @@ export function App() {
     }
   }
 
-  const exportTenhouUrlFile = async () => {
-    if (!tenhouUrl || !analysisProfile) return
-    try {
-      const method = await saveText(
-        'edited-paifu-tenhou-url.txt',
-        tenhouUrl,
-        '視点込み天鳳牌譜URL',
-        { mimeType: 'text/plain', extensions: ['.txt'] },
-      )
-      setNotice(method === 'direct'
-        ? `${analysisProfile.name}視点の天鳳URLを保存しました`
-        : `${analysisProfile.name}視点の天鳳URLをダウンロードしました`)
-    } catch {
-      // User cancelled the platform picker.
-    }
-  }
-
   const exportProject = async () => {
     if (!project) return
     try {
@@ -598,11 +538,11 @@ export function App() {
                 type="button"
                 onClick={() => setJsonExport({
                   text: exportedJson,
-                  title: '天鳳URL・互換JSONを書き出す',
+                  title: '編集済みJSONをコピー',
                   filename: 'edited-paifu.json',
                 })}
               >
-                <Braces size={15} /> 天鳳URL・互換JSON
+                <Braces size={15} /> 互換JSONをコピー
               </button>
               <button type="button" onClick={() => void exportJsonFile()}><Download size={15} /> JSONファイルを保存</button>
               <button type="button" onClick={() => void exportProject()}><FileJson size={15} /> 編集プロジェクトを保存</button>
@@ -677,11 +617,14 @@ export function App() {
                   value={analysisSeat ?? ''}
                   onChange={(change) => {
                     if (change.target.value === '') {
-                      selectAnalysisPlayer(undefined, decoded.raw.name)
+                      setAnalysisSeat(undefined)
+                      setViewpointLocked(false)
                       return
                     }
                     const seat = Number(change.target.value) as Seat
-                    selectAnalysisPlayer(seat, decoded.raw.name)
+                    setAnalysisSeat(seat)
+                    setViewpoint(seat)
+                    setViewpointLocked(true)
                   }}
                 >
                   <option value="">選択してください</option>
@@ -748,12 +691,10 @@ export function App() {
       {jsonExport && (
         <JsonExportDialog
           text={jsonExport.text}
-          url={tenhouUrl}
           title={jsonExport.title}
           analysis={analysisProfile}
           onClose={() => setJsonExport(undefined)}
-          onSaveJson={() => void exportJsonFile(jsonExport.text, jsonExport.filename)}
-          onSaveUrl={() => void exportTenhouUrlFile()}
+          onSave={() => void exportJsonFile(jsonExport.text, jsonExport.filename)}
         />
       )}
       {meldPlanRequest && (
