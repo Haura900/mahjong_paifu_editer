@@ -12,7 +12,10 @@ export async function saveText(
   filename: string,
   contents: string,
   description: string,
+  options: { mimeType?: string; extensions?: string[] } = {},
 ): Promise<'direct' | 'download'> {
+  const mimeType = options.mimeType ?? 'application/json'
+  const extensions = options.extensions ?? ['.json', '.mjpe']
   const picker = (window as unknown as {
     showSaveFilePicker?: (options: unknown) => Promise<{
       createWritable(): Promise<{ write(value: string): Promise<void>; close(): Promise<void> }>
@@ -22,7 +25,7 @@ export async function saveText(
     try {
       const handle = await picker({
         suggestedName: filename,
-        types: [{ description, accept: { 'application/json': ['.json', '.mjpe'] } }],
+        types: [{ description, accept: { [mimeType]: extensions } }],
       })
       const writable = await handle.createWritable()
       await writable.write(contents)
@@ -32,7 +35,7 @@ export async function saveText(
       if (error instanceof DOMException && error.name === 'AbortError') throw error
     }
   }
-  downloadText(filename, contents)
+  downloadText(filename, contents, mimeType)
   return 'download'
 }
 

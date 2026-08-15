@@ -2153,11 +2153,66 @@ textarea:focus-visible {
   font-size: 10px;
 }
 
-.json-export-dialog > p {
+.json-export-dialog {
+  display: flex;
+  flex-direction: column;
+}
+
+.json-export-content {
+  overflow-y: auto;
+}
+
+.export-block > p {
   margin: 15px 22px 9px;
   color: #65736d;
   font-size: 10px;
   line-height: 1.65;
+}
+
+.export-block {
+  margin: 16px 22px 20px;
+}
+
+.export-block h3 {
+  margin: 0;
+  color: #31443d;
+  font-size: 12px;
+}
+
+.export-block > p {
+  margin: 4px 0 8px;
+}
+
+.export-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+  gap: 7px;
+}
+
+.export-actions button {
+  display: inline-flex;
+  min-height: 38px;
+  padding: 0 16px;
+  align-items: center;
+  border: 1px solid #d0d6d2;
+  border-radius: 6px;
+  background: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+  gap: 6px;
+}
+
+.export-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.export-actions .primary-action {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
 }
 
 .analysis-reminder {
@@ -2210,12 +2265,12 @@ textarea:focus-visible {
   flex: 0 0 auto;
 }
 
-.json-export-dialog textarea {
+.export-block textarea {
   display: block;
-  width: calc(100% - 44px);
-  min-height: 260px;
+  width: 100%;
+  min-height: 180px;
   max-height: 42vh;
-  margin: 0 22px 18px;
+  margin: 0;
   padding: 13px;
   resize: vertical;
   border: 1px solid #bfcac5;
@@ -2226,6 +2281,13 @@ textarea:focus-visible {
   font-size: 9px;
   line-height: 1.5;
   white-space: pre;
+}
+
+.export-block textarea.tenhou-url-output {
+  min-height: 86px;
+  max-height: 120px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .privacy-note {
